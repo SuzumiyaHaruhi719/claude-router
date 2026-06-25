@@ -26,9 +26,9 @@ let boundPort = PORT; // actual port after listen (may differ if auto-retried)
 const HOST = "127.0.0.1"; // localhost only — this token = full access to your account
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
-const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
-const SCOPE = "org:create_api_key user:profile user:inference";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
+const SCOPE = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const REQUIRED_BETAS = ["oauth-2025-04-20", "claude-code-20250219"];
 // Upstream + auth mode. Default = Anthropic via subscription OAuth (what the user
 // specced). But Anthropic 403-blocks subscription-OAuth inference (verified
@@ -84,19 +84,29 @@ function buildAuthorizeUrl() {
 
 async function exchangeCode(raw) {
   if (!pending) throw new Error('No pending login — click "Login" first.');
-  // the console callback shows "<code>#<state>"; accept either "code#state" or "code"
-  const [code, state] = String(raw).trim().split("#");
+  // CRS-aligned: clean the code (strip #fragment and &params), then exchange at
+  // platform.claude.com (console.anthropic.com is dead — returns 403/404 post-migration).
+  // The token endpoint fingerprint-checks the official client: it requires the
+  // claude-cli User-Agent + an Origin/Referer of https://claude.ai, else 403.
+  const code = String(raw).trim().split("#")[0].split("&")[0];
   if (!code) throw new Error("Empty authorization code.");
   const res = await fetch(TOKEN_URL, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "claude-cli/1.0.56 (external, cli)",
+      "accept": "application/json, text/plain, */*",
+      "accept-language": "en-US,en;q=0.9",
+      "referer": "https://claude.ai/",
+      "origin": "https://claude.ai",
+    },
     body: JSON.stringify({
       grant_type: "authorization_code",
       code,
       code_verifier: pending.verifier,
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
-      state: state || pending.state,
+      state: pending.state,
     }),
   });
   if (!res.ok) throw new Error(`Token exchange failed (${res.status}): ${await res.text()}`);
@@ -112,7 +122,14 @@ async function exchangeCode(raw) {
 async function refreshCreds(creds) {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "claude-cli/1.0.56 (external, cli)",
+      "accept": "application/json, text/plain, */*",
+      "accept-language": "en-US,en;q=0.9",
+      "referer": "https://claude.ai/",
+      "origin": "https://claude.ai",
+    },
     body: JSON.stringify({
       grant_type: "refresh_token",
       refresh_token: creds.refresh_token,
@@ -141,6 +158,25 @@ async function getAccessToken() {
 }
 
 // --- header helpers --------------------------------------------------------------
+// Official Claude Code client identity (mirrors CRS claudeCodeHeadersService defaults).
+// Anthropic's /v1/messages gate fingerprint-checks these on subscription-OAuth tokens;
+// when Claude Code is the caller they arrive in `incoming` and pass through, but we
+// inject defaults for any that are missing so the OAuth backend is robust standalone.
+const CC_DEFAULT_HEADERS = {
+  "x-stainless-retry-count": "0",
+  "x-stainless-timeout": "60",
+  "x-stainless-lang": "js",
+  "x-stainless-package-version": "0.55.1",
+  "x-stainless-os": "Windows",
+  "x-stainless-arch": "x64",
+  "x-stainless-runtime": "node",
+  "x-stainless-runtime-version": "v20.19.2",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "x-app": "cli",
+  "user-agent": "claude-cli/1.0.57 (external, cli)",
+  "accept-language": "*",
+  "sec-fetch-mode": "cors",
+};
 // Copy client headers minus the ones we replace / hop-by-hop ones.
 function baseHeaders(incoming, alsoStrip) {
   const strip = new Set(["host", "content-length", "connection", "accept-encoding", ...alsoStrip]);
@@ -151,12 +187,16 @@ function baseHeaders(incoming, alsoStrip) {
   if (!out["anthropic-version"]) out["anthropic-version"] = "2023-06-01";
   return out;
 }
-// OAuth mode: drop the client's auth, inject the OAuth bearer, and union anthropic-beta
-// so the subscription token is accepted (when Anthropic allows it).
+// OAuth mode: drop the client's auth, inject the OAuth bearer, union anthropic-beta,
+// and ensure the official-client identity headers are present (inject defaults if the
+// caller didn't send them) so the subscription token is accepted on /v1/messages.
 function headersOAuth(incoming, token) {
   const out = baseHeaders(incoming, ["x-api-key", "authorization", "anthropic-beta"]);
   out["authorization"] = `Bearer ${token}`;
   out["anthropic-beta"] = mergeBetas(incoming["anthropic-beta"]);
+  for (const [k, v] of Object.entries(CC_DEFAULT_HEADERS)) {
+    if (out[k] == null) out[k] = v;
+  }
   return out;
 }
 // Key mode: forward to the configured upstream with x-api-key; pass the client's

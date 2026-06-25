@@ -1,478 +1,1721 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-<meta charset="utf8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>claude-router</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Router</title>
 <style>
-  :root{
-    --bg:#faf9f7; --card:#fff; --ink:#1c1c1c; --muted:#8a857c; --line:#e6e3dd; --line2:#d6d3cc;
-    --primary:#cd6f4c; --primary-d:#b65a39; --ok:#1a7f37; --warn:#b3261e; --chip:#f0eee9;
-    --shadow:0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
-    --shadow-h:0 3px 10px rgba(0,0,0,.10), 0 1px 3px rgba(0,0,0,.06);
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d12;
+    --bg-2: #10131a;
+    --surface: #151922;
+    --surface-2: #1b2230;
+    --surface-3: #222a38;
+    --line: #2d3748;
+    --line-strong: #3f4d63;
+    --text: #edf2ff;
+    --muted: #aab6c7;
+    --subtle: #7e8aa0;
+    --primary: #4cc9f0;
+    --primary-ink: #03141c;
+    --accent: #a78bfa;
+    --success: #63e6be;
+    --warning: #fbbf24;
+    --danger: #fb7185;
+    --danger-ink: #21050a;
+    --shadow: 0 16px 40px rgba(0, 0, 0, .32);
+    --ring: 0 0 0 3px rgba(76, 201, 240, .28);
+    --radius: 8px;
+    --radius-sm: 6px;
+    --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    --dur: 180ms;
+    --ease: cubic-bezier(.2, .8, .2, 1);
   }
-  *{box-sizing:border-box}
-  body{font:15px/1.55 system-ui,"Segoe UI",sans-serif;max-width:980px;margin:0 auto;padding:0 20px 80px;color:var(--ink);background:var(--bg)}
-  h1{font-size:22px;margin:0}
-  h2{font-size:15px;margin:0 0 12px;color:#444;text-transform:uppercase;letter-spacing:.04em}
-  a{color:var(--primary-d)}
-  code,mono{font-family:"SF Mono",Consolas,monospace;background:var(--chip);padding:1px 6px;border-radius:5px;font-size:13px}
-  .muted{color:var(--muted);font-size:13px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;box-shadow:var(--shadow);transition:box-shadow 120ms ease}
-  .card:hover{box-shadow:var(--shadow-h)}
-  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .between{justify-content:space-between}
-  .grow{flex:1 1 auto}
-  button,.btn{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line2);background:var(--card);padding:7px 14px;color:var(--ink);transition:background 120ms,border-color 120ms,box-shadow 120ms}
-  button:hover,.btn:hover{background:#f5f3ef;border-color:var(--line2)}
-  button:active{box-shadow:inset 0 1px 2px rgba(0,0,0,.1)}
-  button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
-  button.primary:hover{background:var(--primary-d)}
-  button.danger{color:var(--warn);border-color:#e6c9c5}
-  button.danger:hover{background:#fbf0ee}
-  button.small{padding:4px 10px;font-size:13px}
-  input[type=text],input[type=password],input[type=url],select,textarea{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:#fff;color:var(--ink);transition:border-color 120ms,box-shadow 120ms}
-  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(205,111,76,.16)}
-  label.field{display:block;margin:10px 0}
-  label.field > span{display:block;font-size:13px;color:#555;margin:0 0 4px}
-  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.03em}
-  .badge.anthropic{background:#efe7f0;color:#6b3a78}
-  .badge.openai{background:#e3edf6;color:#2a5d80}
-  .badge.openai-responses{background:#e0efe7;color:#2f6d4a}
-  .badge.oauth{background:#fdf0d8;color:#8a6d1a}
-  .badge.codex{background:#eef0e9;color:#4a6d2f}
-  .badge.mode{background:var(--chip);color:#555}
-  .chip{display:inline-block;font-size:12px;background:var(--chip);padding:2px 8px;border-radius:6px;margin:2px 4px 2px 0}
-  .ok{color:var(--ok)} .warn{color:var(--warn)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
-  .bcard h3{margin:0 0 4px;font-size:15px}
-  .bcard .up{font-size:12px;color:var(--muted);word-break:break-all;margin:4px 0}
-  .bcard .key{font-size:12px;color:#555}
-  .bcard .acts{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
-  .bcard .test{margin-top:8px;font-size:12px}
-  table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
-  th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
-  td input,td select{padding:6px 8px;font-size:13px}
-  .preview{background:#1e1e1e;color:#e8e6e3;border-radius:8px;padding:12px 14px;font-family:"SF Mono",Consolas,monospace;font-size:12.5px;white-space:pre-wrap;overflow-x:auto}
-  .banner{border:1px solid #e6c9c5;background:#fbf0ee;border-radius:8px;padding:10px 12px;color:var(--warn);font-size:13px;margin:8 0}
-  .status{font-size:13px;color:#555;margin-top:6px}
-  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:flex-start;justify-content:center;padding:5vh 20px;z-index:50}
-  .modal-bg.open{display:flex}
-  .modal{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:520px;width:100%;box-shadow:var(--shadow-h);max-height:88vh;overflow:auto}
-  .modal h2{margin-top:0}
-  .hint{font-size:12px;color:var(--muted);margin-top:4px}
-  .copyok{font-size:12px;color:var(--ok);opacity:0;transition:opacity 120ms}
-  .copyok.show{opacity:1}
-  .toggle{position:relative;width:38px;height:22px;flex:0 0 auto}
-  .toggle input{opacity:0;width:0;height:0}
-  .toggle .track{position:absolute;inset:0;background:#cfc9bd;border-radius:999px;transition:background 120ms}
-  .toggle .track::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:transform 120ms}
-  .toggle input:checked + .track{background:var(--ok)}
-  .toggle input:checked + .track::after{transform:translateX(16px)}
-  .sub{color:var(--muted);margin:2px 0 0;font-size:13px}
+
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #f5f7fb;
+    --bg-2: #eef2f7;
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --surface-3: #eef4fa;
+    --line: #cfd8e6;
+    --line-strong: #a8b5c8;
+    --text: #111827;
+    --muted: #46556a;
+    --subtle: #66758b;
+    --primary: #0077b6;
+    --primary-ink: #ffffff;
+    --accent: #6d28d9;
+    --success: #047857;
+    --warning: #a16207;
+    --danger: #be123c;
+    --danger-ink: #ffffff;
+    --shadow: 0 16px 36px rgba(20, 32, 48, .14);
+    --ring: 0 0 0 3px rgba(0, 119, 182, .25);
+  }
+
+  * { box-sizing: border-box; }
+  html { min-height: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background:
+      radial-gradient(circle at 18% -10%, rgba(76, 201, 240, .16), transparent 34rem),
+      radial-gradient(circle at 86% 0%, rgba(167, 139, 250, .14), transparent 30rem),
+      linear-gradient(180deg, var(--bg), var(--bg-2));
+    color: var(--text);
+    font: 14px/1.5 var(--font);
+    letter-spacing: 0;
+  }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button, input, select, textarea { font: inherit; }
+  button, .button, input, select, textarea { min-height: 44px; }
+  button, .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    padding: 0 12px;
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: none;
+    transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), opacity var(--dur) var(--ease);
+    touch-action: manipulation;
+  }
+  button:hover, .button:hover { background: var(--surface-3); text-decoration: none; }
+  button:active, .button:active { transform: translateY(1px); }
+  button:disabled, .button[aria-disabled="true"] { cursor: not-allowed; opacity: .52; transform: none; }
+  .primary {
+    background: var(--primary);
+    border-color: transparent;
+    color: var(--primary-ink);
+    font-weight: 700;
+  }
+  .primary:hover { background: color-mix(in srgb, var(--primary), white 10%); }
+  .danger {
+    background: color-mix(in srgb, var(--danger), transparent 84%);
+    border-color: color-mix(in srgb, var(--danger), transparent 42%);
+    color: var(--danger);
+  }
+  .danger:hover {
+    background: color-mix(in srgb, var(--danger), transparent 76%);
+    color: var(--text);
+  }
+  .ghost { background: transparent; border-color: var(--line); }
+  .icon-only { width: 44px; padding: 0; }
+  .small-btn { min-height: 44px; padding: 0 10px; font-size: 12px; }
+  input, select, textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 9px 11px;
+    background: color-mix(in srgb, var(--surface-2), var(--bg) 18%);
+    color: var(--text);
+    transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease);
+  }
+  textarea { min-height: 92px; resize: vertical; }
+  input::placeholder, textarea::placeholder { color: var(--subtle); }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+    border-color: var(--primary);
+  }
+  label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 650; }
+  label span { color: var(--muted); }
+  code, .mono {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: color-mix(in srgb, var(--surface-3), transparent 30%);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 2px 5px;
+  }
+  pre {
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 12px/1.55 var(--mono);
+  }
+  svg { width: 18px; height: 18px; flex: 0 0 auto; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .skip-link {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    z-index: 1000;
+    transform: translateY(-140%);
+    background: var(--primary);
+    color: var(--primary-ink);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    transition: transform var(--dur) var(--ease);
+  }
+  .skip-link:focus { transform: translateY(0); }
+
+  .shell { max-width: 1480px; margin: 0 auto; padding: 16px; }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg), transparent 9%);
+    backdrop-filter: blur(16px);
+  }
+  .topbar-inner {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 12px 16px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .brand-row, .control-row, .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .brand-row { justify-content: space-between; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+    border: 1px solid color-mix(in srgb, var(--primary), transparent 40%);
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--primary), transparent 82%), color-mix(in srgb, var(--accent), transparent 82%));
+    color: var(--primary);
+  }
+  h1 { margin: 0; font-size: clamp(20px, 3vw, 28px); line-height: 1.1; }
+  .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface-2), transparent 20%);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .badge.primary-badge { color: var(--primary); border-color: color-mix(in srgb, var(--primary), transparent 45%); }
+  .badge.success { color: var(--success); border-color: color-mix(in srgb, var(--success), transparent 45%); }
+  .badge.warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning), transparent 45%); }
+  .badge.danger-badge { color: var(--danger); border-color: color-mix(in srgb, var(--danger), transparent 45%); }
+  .badge.accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent), transparent 45%); }
+  .base-url {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: min(100%, 280px);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--surface), transparent 8%);
+    padding: 4px;
+  }
+  .base-url code {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: transparent;
+    border: 0;
+    color: var(--text);
+  }
+  .admin-token { min-width: min(100%, 260px); max-width: 360px; }
+  .oauth-line { color: var(--muted); font-size: 13px; }
+
+  main { display: grid; gap: 16px; padding: 16px 0 48px; }
+  .section {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--surface), transparent 4%);
+    box-shadow: var(--shadow);
+  }
+  .section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 14px 0;
+    flex-wrap: wrap;
+  }
+  h2 {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.2;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .section-copy { margin: 6px 0 0; color: var(--muted); font-size: 13px; max-width: 72ch; }
+  .section-body { padding: 14px; }
+  .panel-grid { display: grid; gap: 12px; }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric {
+    min-height: 96px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2), transparent 4%), color-mix(in srgb, var(--surface), transparent 4%));
+  }
+  .metric .k { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .metric .v { margin-top: 8px; font: 700 26px/1 var(--mono); color: var(--text); }
+  .metric .hint { margin-top: 8px; color: var(--subtle); font-size: 12px; }
+  .metric[data-tone="success"] .v { color: var(--success); }
+  .metric[data-tone="warn"] .v { color: var(--warning); }
+  .metric[data-tone="danger"] .v { color: var(--danger); }
+  .metric[data-tone="primary"] .v { color: var(--primary); }
+  .split {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .status-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .status-list li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+    min-height: 44px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface-2), transparent 22%);
+    color: var(--muted);
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    margin-top: 6px;
+    border-radius: 999px;
+    background: var(--subtle);
+  }
+  .dot.ok { background: var(--success); }
+  .dot.warn { background: var(--warning); }
+  .dot.err { background: var(--danger); }
+  .empty {
+    min-height: 84px;
+    display: grid;
+    place-items: center;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+    color: var(--muted);
+    text-align: center;
+    padding: 16px;
+  }
+
+  .backend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 12px;
+  }
+  .backend-card {
+    display: grid;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2), transparent 8%), color-mix(in srgb, var(--surface), transparent 3%));
+    padding: 12px;
+  }
+  .card-head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: start;
+  }
+  .backend-card h3 { margin: 0; font-size: 16px; line-height: 1.25; }
+  .meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .kv-grid {
+    display: grid;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .kv-grid div { min-width: 0; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    max-width: 100%;
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-3), transparent 25%);
+    color: var(--muted);
+    font: 700 11px/1.2 var(--mono);
+  }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .test-result {
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--bg), transparent 44%);
+    font-size: 12px;
+  }
+
+  .switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 52px;
+    min-height: 44px;
+  }
+  .switch input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+  .track {
+    position: relative;
+    width: 46px;
+    height: 26px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-3);
+    transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  }
+  .track::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: var(--muted);
+    transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease);
+  }
+  .switch input:checked + .track {
+    background: color-mix(in srgb, var(--success), transparent 60%);
+    border-color: color-mix(in srgb, var(--success), transparent 30%);
+  }
+  .switch input:checked + .track::after {
+    transform: translateX(20px);
+    background: var(--success);
+  }
+  .switch input:focus-visible + .track { box-shadow: var(--ring); }
+
+  .table-shell {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--surface-2), transparent 16%);
+  }
+  table {
+    width: 100%;
+    min-width: 720px;
+    border-collapse: collapse;
+  }
+  th, td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: middle;
+  }
+  th {
+    color: var(--muted);
+    background: color-mix(in srgb, var(--surface-3), transparent 22%);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  tr:last-child td { border-bottom: 0; }
+  .order-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+  }
+  .add-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .profiles-layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .profile-list {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+  }
+  .profile-item {
+    justify-content: flex-start;
+    width: 100%;
+    min-height: 48px;
+    text-align: left;
+    border-color: var(--line);
+  }
+  .profile-item[aria-pressed="true"] {
+    border-color: color-mix(in srgb, var(--primary), transparent 30%);
+    background: color-mix(in srgb, var(--primary), transparent 86%);
+    color: var(--text);
+  }
+  .editor-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .preview {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #07090d;
+    color: #dbeafe;
+    padding: 12px;
+  }
+  [data-theme="light"] .preview {
+    background: #0f172a;
+    color: #e5edff;
+  }
+  .banner {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+    border: 1px solid color-mix(in srgb, var(--warning), transparent 38%);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--warning), transparent 88%);
+    color: var(--text);
+    padding: 10px;
+  }
+  .banner[hidden] { display: none; }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: start center;
+    overflow: auto;
+    padding: 20px 12px;
+    background: rgba(2, 6, 14, .68);
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal {
+    width: min(100%, 760px);
+    max-height: calc(100dvh - 40px);
+    overflow: auto;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .modal-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 14px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface), transparent 3%);
+  }
+  .modal-body { padding: 14px; display: grid; gap: 12px; }
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .inline-field {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: end;
+  }
+  fieldset {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin: 0;
+    padding: 12px;
+  }
+  legend { padding: 0 6px; color: var(--muted); font-size: 12px; font-weight: 750; text-transform: uppercase; letter-spacing: .04em; }
+  .check-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: center;
+    min-height: 44px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .check-row input { width: 18px; height: 18px; min-height: 18px; }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 14px;
+    border-top: 1px solid var(--line);
+  }
+  .toast {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 120;
+    width: min(420px, calc(100vw - 32px));
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
+    padding: 12px;
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.ok { border-color: color-mix(in srgb, var(--success), transparent 35%); }
+  .toast.err { border-color: color-mix(in srgb, var(--danger), transparent 35%); }
+  .toast.warn { border-color: color-mix(in srgb, var(--warning), transparent 35%); }
+
+  .footer {
+    display: grid;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 0 0 40px;
+  }
+  .footer-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .command-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .load-error { margin-top: 12px; }
+  .soft { color: var(--muted); }
+  .tight { margin: 0; }
+  .hide { display: none !important; }
+
+  @media (min-width: 720px) {
+    .topbar-inner { grid-template-columns: 1fr; }
+    .control-row { justify-content: flex-end; }
+    .stats-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .split { grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); }
+    .add-row { grid-template-columns: 1fr minmax(220px, .4fr) auto; align-items: end; }
+    .profiles-layout { grid-template-columns: minmax(220px, .32fr) minmax(0, 1fr); }
+    .editor-grid { grid-template-columns: 1fr 1fr; }
+    .span-2 { grid-column: 1 / -1; }
+    .form-grid.two { grid-template-columns: 1fr 1fr; }
+    .form-grid.three { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  @media (min-width: 1080px) {
+    .topbar-inner { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+    .brand-row { justify-content: flex-start; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      transition-duration: 1ms !important;
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 
-<header class="card">
-  <div class="row between">
-    <div>
-      <h1>claude-router</h1>
-      <p class="sub">Multi-backend model router + Anthropic↔OpenAI translation · localhost only</p>
+<svg class="sr-only" aria-hidden="true" focusable="false">
+  <symbol id="icon-router" viewBox="0 0 24 24"><path d="M4 7.5h16M4 16.5h16M8 4v7M16 13v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="7.5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="16" cy="16.5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="icon-copy" viewBox="0 0 24 24"><path d="M9 9h10v10H9z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 11a7 7 0 0 0-12.3-4M5 13a7 7 0 0 0 12.3 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+  <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M4 20h4l11-11a2.2 2.2 0 0 0-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M13.5 6.5l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M9 7V5h6v2M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-test" viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-5 9a3 3 0 0 0 2.6 4h8.8A3 3 0 0 0 19 17l-5-9V3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 15h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="icon-check" viewBox="0 0 24 24"><path d="M5 12.5l4.2 4L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M14 8V5H5v14h9v-3M10 12h11M17 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 5H5v14h14v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-lock" viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand-row">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg><use href="#icon-router"></use></svg></div>
+        <div>
+          <h1>Claude Router</h1>
+          <p class="subtitle">Localhost control plane for Claude Code backends, routes, profiles, and throttle state.</p>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="badge primary-badge" id="modeBadge">Loading</span>
+        <span class="badge" id="pollBadge">Live</span>
+      </div>
     </div>
-    <div class="row" style="gap:8px">
-      <code id="baseUrl">http://127.0.0.1:8123</code>
-      <button class="small" id="copyBtn">Copy</button>
-      <span class="copyok" id="copyOk">copied</span>
-      <span class="badge mode" id="modeBadge">…</span>
+    <div class="control-row" aria-label="Router controls">
+      <div class="base-url" title="Router base URL">
+        <code id="baseUrl">http://127.0.0.1:8123</code>
+        <button class="icon-only" id="copyBaseUrl" type="button" aria-label="Copy router base URL"><svg aria-hidden="true"><use href="#icon-copy"></use></svg></button>
+      </div>
+      <label class="admin-token">
+        <span class="sr-only">Admin token</span>
+        <input id="adminToken" type="password" autocomplete="off" placeholder="X-Admin-Token if configured" aria-label="Admin token">
+      </label>
+      <button class="ghost" id="refreshNow" type="button"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg>Refresh</button>
+      <button class="ghost" id="themeToggle" type="button" aria-label="Toggle light and dark theme">Theme: dark</button>
     </div>
+    <div class="oauth-line" id="oauthLine" aria-live="polite">OAuth status loading.</div>
+    <div class="banner load-error" id="loadError" hidden><span class="dot err" aria-hidden="true"></span><div></div></div>
   </div>
-  <p class="status" id="oauthStatus"></p>
 </header>
 
-<section id="oauthCard" class="card" hidden>
-  <h2>OAuth login (Claude subscription)</h2>
-  <div class="row" style="align-items:flex-start">
-    <div class="grow">
-      <ol style="margin:0;padding-left:20px;color:#444">
-        <li><a class="btn primary" href="/login" target="_blank" rel="noopener">① Login with Claude</a> <span class="muted">— opens a new tab; sign in & approve.</span></li>
-        <li>After approving, the page shows a string like <code>code#state</code> — copy the whole thing.</li>
-        <li>Paste it here and submit:
-          <form method="post" action="/exchange" style="display:flex;gap:6px;margin-top:6px">
-            <input name="code" placeholder="paste code#state here" autocomplete="off" style="flex:1">
-            <button class="primary">② Submit code</button>
+<div class="shell">
+<main id="main">
+  <section class="section" aria-labelledby="statsTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="statsTitle">Live Admin Stats</h2>
+        <p class="section-copy">Throttle counters are polled from <code>/api/state</code>. Request history appears only if the backend exposes it.</p>
+      </div>
+      <label class="check-row" style="grid-template-columns:auto 1fr">
+        <input id="autoRefresh" type="checkbox" checked>
+        <span>Auto refresh</span>
+      </label>
+    </div>
+    <div class="section-body split">
+      <div class="panel-grid stats-grid" id="statsGrid"></div>
+      <div>
+        <h3 class="sr-only">Recent requests</h3>
+        <ul class="status-list" id="recentList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="oauthTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="oauthTitle">OAuth Login</h2>
+        <p class="section-copy">Anthropic subscription OAuth is still available for anthropic-format backends. Codex OAuth is configured per openai-responses backend.</p>
+      </div>
+      <form id="logoutForm">
+        <button class="danger" type="submit"><svg aria-hidden="true"><use href="#icon-logout"></use></svg>Logout</button>
+      </form>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="row">
+        <a class="button primary" href="/login" target="_blank" rel="noopener"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Login with Claude</a>
+        <span class="soft">Opens the Claude authorization flow in a new tab.</span>
+      </div>
+      <form id="exchangeForm" class="add-row" autocomplete="off">
+        <label>
+          <span>Authorization code with state</span>
+          <input id="exchangeCode" name="code" type="text" inputmode="text" placeholder="Paste code#state from the callback page">
+        </label>
+        <div></div>
+        <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Submit</button>
+      </form>
+      <div class="banner">
+        <span class="dot warn" aria-hidden="true"></span>
+        <div>
+          <strong>curl / 403 note:</strong> the server intentionally uses curl-compatible upstream calls for Anthropic OAuth/token and Anthropic-bound inference because Node HTTP clients can hit TLS-fingerprint 403s. A 429 during test usually means auth passed and the upstream rate limit answered.
+        </div>
+      </div>
+      <ul class="status-list" id="oauthStatusList"></ul>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="backendsTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="backendsTitle">Backends</h2>
+        <p class="section-copy">Each backend maps model patterns to an upstream format: Anthropic passthrough, OpenAI chat completions, or OpenAI Responses/Codex.</p>
+      </div>
+      <button class="primary" id="addBackend" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add backend</button>
+    </div>
+    <div class="section-body">
+      <div class="backend-grid" id="backendsGrid"></div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="routesTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="routesTitle">Routes</h2>
+        <p class="section-copy">First specific match wins; <code>*</code> catches all after backend model-pattern fallbacks.</p>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="table-shell">
+        <table aria-label="Routes">
+          <thead><tr><th>#</th><th>Pattern</th><th>Backend</th><th>Actions</th></tr></thead>
+          <tbody id="routesBody"></tbody>
+        </table>
+      </div>
+      <form class="add-row" id="addRouteForm">
+        <label>
+          <span>Pattern</span>
+          <input id="routePattern" type="text" placeholder="gpt-5.5 or *">
+        </label>
+        <label>
+          <span>Backend</span>
+          <select id="routeBackend"></select>
+        </label>
+        <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add route</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="profilesTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="profilesTitle">Profiles</h2>
+        <p class="section-copy">CC-Switch-style profiles write Claude Code environment keys into <code>~/.claude/settings.json</code> on apply.</p>
+      </div>
+      <div class="row">
+        <button id="newProfile" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>New</button>
+        <button class="danger" id="restoreProfile" type="button">Restore original</button>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="banner" id="conflictBanner" hidden><span class="dot warn" aria-hidden="true"></span><div></div></div>
+      <div id="profileStatus" class="soft" aria-live="polite"></div>
+      <div class="profiles-layout">
+        <div class="profile-list" id="profileList" aria-label="Profiles"></div>
+        <div class="panel-grid">
+          <form id="profileForm" class="editor-grid">
+            <label>
+              <span>Profile name</span>
+              <input id="profileName" type="text" autocomplete="off" placeholder="daily-codex">
+            </label>
+            <label>
+              <span>Primary model</span>
+              <input id="profileModel" type="text" autocomplete="off" placeholder="gpt-5.5">
+            </label>
+            <label class="span-2">
+              <span>Environment overrides, one per line</span>
+              <textarea id="profileEnv" spellcheck="false" placeholder="ANTHROPIC_DEFAULT_OPUS_MODEL=opus"></textarea>
+            </label>
+            <label class="span-2">
+              <span>Route overrides, one per line</span>
+              <textarea id="profileRoutes" spellcheck="false" placeholder="gpt-5*: codex&#10;*: claude"></textarea>
+            </label>
+            <div class="row span-2">
+              <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Save profile</button>
+              <button id="applyProfile" type="button"><svg aria-hidden="true"><use href="#icon-router"></use></svg>Apply</button>
+              <button class="danger" id="deleteProfile" type="button"><svg aria-hidden="true"><use href="#icon-trash"></use></svg>Delete</button>
+            </div>
           </form>
-        </li>
-      </ol>
+          <div>
+            <p class="soft tight">Settings env preview</p>
+            <div class="preview" style="margin-top:8px"><pre id="profilePreview"></pre></div>
+          </div>
+        </div>
+      </div>
     </div>
-    <form method="post" action="/logout"><button class="danger">Logout</button></form>
-  </div>
-  <p class="warn" style="font-size:13px;margin-top:12px">⚠ Anthropic currently 403-blocks subscription-OAuth inference (verified 2026-06-25). For a working setup today, add an <b>API-key</b> or <b>openai-format</b> backend below (GLM/z.ai/codex) — the OAuth login here is kept in case the block lifts.</p>
-</section>
+  </section>
 
-<section class="card">
-  <div class="row between">
-    <h2 style="margin:0">Backends</h2>
-    <button class="primary small" id="addBackendBtn">+ Add backend</button>
-  </div>
-  <div class="grid" id="backendsGrid" style="margin-top:14px"></div>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2 style="margin:0">Routes</h2>
-    <span class="muted">First match wins. <code>*</code> catches all (deferred after per-backend modelPatterns).</span>
-  </div>
-  <table id="routesTable" style="margin-top:10px">
-    <thead><tr><th>#</th><th>Pattern</th><th>Backend</th><th style="width:1%">Actions</th></tr></thead>
-    <tbody id="routesBody"></tbody>
-  </table>
-  <div class="row" style="margin-top:8px;gap:6px">
-    <input type="text" id="newRoutePattern" placeholder="pattern e.g. gpt-5.5 or *" style="flex:1">
-    <select id="newRouteBackend" style="max-width:220px"></select>
-    <button class="small" id="addRouteBtn">Add route</button>
-  </div>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2 style="margin:0">Claude Code profile (CC-Switch style)</h2>
-    <div class="row" style="gap:6px">
-      <select id="profileSelect" style="max-width:200px"></select>
-      <button class="primary small" id="applyProfileBtn">Apply profile</button>
-      <button class="small danger" id="restoreProfileBtn">Restore original</button>
+  <section class="section" aria-labelledby="dummyTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="dummyTitle">Dummy Key Help</h2>
+        <p class="section-copy"><code>ANTHROPIC_API_KEY=claude-router</code> is intentionally non-empty so Claude Code will send requests. The router ignores that dummy key and injects the selected backend's OAuth token, x-api-key, or bearer token upstream.</p>
+      </div>
     </div>
-  </div>
-  <div id="profileStatus" class="status"></div>
-  <div id="conflictBanner" class="banner" hidden></div>
-  <p class="muted" style="margin-top:10px">Applying writes <code>~/.claude/settings.json</code> (deep-merge, backup first). Claude Code picks it up on its <b>next session</b>.</p>
-  <div class="preview" id="profilePreview" style="margin-top:8px"></div>
-  <div class="row" style="margin-top:10px;gap:8px">
-    <input type="text" id="profileName" placeholder="profile name" style="max-width:190px">
-    <input type="text" id="profilePrimaryModel" placeholder="primary model e.g. glm-5.2" style="flex:1">
-    <button class="small" id="saveProfileBtn">Save profile</button>
-    <button class="small danger" id="deleteProfileBtn">Delete selected</button>
-  </div>
-  <textarea id="profileEnv" rows="3" placeholder="optional env overrides, one per line: KEY=value" style="margin-top:8px;width:100%;box-sizing:border-box"></textarea>
-</section>
+  </section>
+</main>
 
-<!-- backend add/edit modal -->
-<div class="modal-bg" id="backendModal">
-  <div class="modal">
-    <h2 id="modalTitle">Add backend</h2>
-    <input type="hidden" id="f_id_orig">
-    <label class="field"><span>id (lowercase, a-z0-9-, unique)</span><input type="text" id="f_id" placeholder="codex" autocomplete="off"></label>
-    <label class="field"><span>Display name</span><input type="text" id="f_name" placeholder="OpenAI Codex (gpt-5.5)"></label>
-    <label class="field"><span>Format</span>
-      <select id="f_format">
-        <option value="anthropic">anthropic (native /v1/messages passthrough)</option>
-        <option value="openai">openai (translate to /v1/chat/completions)</option>
-        <option value="openai-responses">openai-responses (Codex CLI /v1/responses — ChatGPT subscription)</option>
-      </select>
-    </label>
-    <label class="field"><span>Upstream base URL</span><input type="url" id="f_upstream" placeholder="anthropic: https://api.anthropic.com · openai: https://api.openai.com/v1 · codex: https://chatgpt.com/backend-api/codex/responses"></label>
-    <label class="field"><span>API key</span><input type="password" id="f_apiKey" placeholder="sk-… (leave blank on edit to keep stored key; blank for Codex OAuth)"></label>
-    <label class="field" style="flex-direction:row;align-items:center;gap:8px">
-      <input type="checkbox" id="f_oauth" style="width:auto">
-      <span>OAuth subscription (anthropic only — uses ~/.claude-router/creds.json; only one allowed)</span>
-    </label>
-    <label class="field" id="f_codexOauthWrap" style="flex-direction:row;align-items:center;gap:8px" hidden>
-      <input type="checkbox" id="f_codexOauth" style="width:auto">
-      <span>Codex OAuth (reads <code>~/.codex/auth.json</code> — run <code>codex login</code> first; only one allowed)</span>
-    </label>
-    <label class="field"><span>Model patterns (comma-separated globs)</span><input type="text" id="f_modelPatterns" placeholder="gpt-5.5, gpt-5*"></label>
-    <label class="field"><span>Model map (one per line: sentModel=upstreamModel)</span><textarea id="f_modelMap" rows="2" placeholder="opus=claude-opus-4-8"></textarea></label>
-    <label class="field"><span>Test model</span><input type="text" id="f_testModel" placeholder="gpt-5.5 (used by Test / --checkbackends)"></label>
-    <label class="field" style="flex-direction:row;align-items:center;gap:8px">
-      <input type="checkbox" id="f_throttle" style="width:auto">
-      <span>Throttle/retry this backend (for DashScope/GLM only)</span>
-    </label>
-    <div class="row" id="f_throttleFields" style="gap:8px">
-      <label class="field"><span>Concurrency</span><input type="number" id="f_maxConcurrency" min="1" max="50"></label>
-      <label class="field"><span>Retries</span><input type="number" id="f_maxRetries" min="0" max="6"></label>
-      <label class="field"><span>Base backoff ms</span><input type="number" id="f_baseBackoffMs" min="0"></label>
-      <label class="field"><span>Max backoff ms</span><input type="number" id="f_maxBackoffMs" min="0"></label>
-      <label class="field"><span>Min interval ms</span><input type="number" id="f_minIntervalMs" min="0"></label>
-    </div>
-    <p class="hint" id="codexHint" hidden>Codex CLI uses <code>/v1/responses</code>; this router uses <code>/v1/chat/completions</code> with an <code>sk-</code> key — same host (api.openai.com/v1), same model name. Not Responses-API parity.</p>
-    <div class="row" style="margin-top:16px;justify-content:flex-end;gap:8px">
-      <button id="modalCancel">Cancel</button>
-      <button class="primary" id="modalSave">Save</button>
-    </div>
+<footer class="footer">
+  <div class="footer-links" aria-label="Project links">
+    <a href="README.md">README</a>
+    <a href="docs/superpowers/specs/2026-06-25-claude-router-multi-backend-design.md">Multi-backend spec</a>
+    <a href="docs/superpowers/specs/2026-06-24-claude-router-design.md">Original spec</a>
   </div>
+  <div class="command-list" aria-label="Commands">
+    <code>node server.js --selftest</code>
+    <code>node server.js --checkbackends</code>
+  </div>
+</footer>
 </div>
+
+<div class="modal-backdrop" id="backendModal" hidden>
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="backendModalTitle">
+    <div class="modal-head">
+      <h2 id="backendModalTitle">Add backend</h2>
+      <button class="icon-only" id="closeBackendModal" type="button" aria-label="Close backend editor"><svg aria-hidden="true"><use href="#icon-x"></use></svg></button>
+    </div>
+    <form id="backendForm">
+      <div class="modal-body">
+        <input type="hidden" id="backendOriginalId">
+        <div class="form-grid two">
+          <label>
+            <span>Backend ID</span>
+            <input id="backendId" type="text" autocomplete="off" placeholder="codex">
+          </label>
+          <label>
+            <span>Name</span>
+            <input id="backendName" type="text" autocomplete="off" placeholder="Codex Responses">
+          </label>
+        </div>
+        <div class="form-grid two">
+          <label>
+            <span>Format</span>
+            <select id="backendFormat">
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+              <option value="openai-responses">openai-responses</option>
+            </select>
+          </label>
+          <label>
+            <span>Enabled</span>
+            <select id="backendEnabled">
+              <option value="true">enabled</option>
+              <option value="false">disabled</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Upstream</span>
+          <input id="backendUpstream" type="url" autocomplete="off" placeholder="https://api.anthropic.com">
+        </label>
+        <div class="inline-field">
+          <label>
+            <span>API key</span>
+            <input id="backendApiKey" type="password" autocomplete="off" placeholder="Leave blank on edit to preserve the stored key">
+          </label>
+          <button class="icon-only" id="toggleKey" type="button" aria-label="Show or hide API key"><svg aria-hidden="true"><use href="#icon-eye"></use></svg></button>
+        </div>
+        <fieldset>
+          <legend>Auth</legend>
+          <label class="check-row">
+            <input id="backendOauth" type="checkbox">
+            <span>Use Claude OAuth credentials for anthropic-format backend.</span>
+          </label>
+          <label class="check-row">
+            <input id="backendCodexOauth" type="checkbox">
+            <span>Use Codex OAuth for openai-responses backend, read-only from <code>~/.codex/auth.json</code>.</span>
+          </label>
+        </fieldset>
+        <div class="form-grid two">
+          <label>
+            <span>Model patterns</span>
+            <input id="backendPatterns" type="text" autocomplete="off" placeholder="gpt-5.5, gpt-5*">
+          </label>
+          <label>
+            <span>Test model</span>
+            <input id="backendTestModel" type="text" autocomplete="off" placeholder="gpt-5.5">
+          </label>
+        </div>
+        <label>
+          <span>Model map, one per line</span>
+          <textarea id="backendModelMap" spellcheck="false" placeholder="opus: claude-opus-4-8"></textarea>
+        </label>
+        <fieldset>
+          <legend>Throttle</legend>
+          <label class="check-row">
+            <input id="backendThrottle" type="checkbox">
+            <span>Enable concurrency, retry, and rate-gate controls for this backend.</span>
+          </label>
+          <div class="form-grid three">
+            <label><span>Max concurrency</span><input id="backendMaxConcurrency" type="number" min="1" max="50" step="1"></label>
+            <label><span>Max retries</span><input id="backendMaxRetries" type="number" min="0" max="6" step="1"></label>
+            <label><span>Min interval ms</span><input id="backendMinIntervalMs" type="number" min="0" step="10"></label>
+            <label><span>Base backoff ms</span><input id="backendBaseBackoffMs" type="number" min="0" step="50"></label>
+            <label><span>Max backoff ms</span><input id="backendMaxBackoffMs" type="number" min="0" step="100"></label>
+          </div>
+        </fieldset>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="cancelBackend">Cancel</button>
+        <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Save backend</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
-const $ = (id) => document.getElementById(id);
-const DUMMY_KEY = "claude-router";
-const GLM_NATIVE_UPSTREAM = "https://dashscope.aliyuncs.com/apps/anthropic";
-const THROTTLE_DEFAULTS = {maxConcurrency:5,maxRetries:3,baseBackoffMs:800,maxBackoffMs:10000,minIntervalMs:350};
-let STATE = null;
 
-function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-async function api(method, path, body){
-  const opt = {method, headers:{}};
-  if(body!==undefined){opt.headers["content-type"]="application/json";opt.body=JSON.stringify(body);}
-  const r = await fetch(path, opt);
-  const txt = await r.text();
-  let j; try{j=JSON.parse(txt);}catch{j=txt;}
-  if(!r.ok) throw new Error((j&&j.error&&j.error.message)||txt||("HTTP "+r.status));
-  return j;
+const DUMMY_KEY = "claude-router";
+const CODEX_RESPONSES_UPSTREAM = "https://chatgpt.com/backend-api/codex/responses";
+const DEFAULT_UPSTREAMS = {
+  "anthropic": "https://api.anthropic.com",
+  "openai": "https://api.openai.com/v1",
+  "openai-responses": CODEX_RESPONSES_UPSTREAM
+};
+const THROTTLE_DEFAULTS = {
+  maxConcurrency: 5,
+  maxRetries: 3,
+  baseBackoffMs: 800,
+  maxBackoffMs: 10000,
+  minIntervalMs: 350
+};
+const PROFILE_UI_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const $ = (id) => document.getElementById(id);
+let state = {
+  mode: "loading",
+  baseUrl: location.origin && location.origin !== "null" ? location.origin : "http://127.0.0.1:8123",
+  oauthStatus: "",
+  backends: [],
+  routes: [],
+  profiles: {},
+  activeProfile: null,
+  throttleStats: {},
+  osEnvConflicts: []
+};
+let selectedProfileName = null;
+let pollTimer = null;
+let lastFocus = null;
+
+function icon(name) {
+  return `<svg aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+}
+function esc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[c]));
+}
+function modeLabel(mode) {
+  if (mode === "multi-backend") return "Multi-backend";
+  if (mode === "api-key") return "API-key";
+  if (mode === "oauth") return "OAuth";
+  return String(mode || "Unknown");
+}
+function adminHeaders(headers = {}) {
+  const token = $("adminToken").value.trim();
+  if (token) headers["x-admin-token"] = token;
+  return headers;
+}
+function apiErrorMessage(payload, status) {
+  if (payload && typeof payload === "object" && payload.error) {
+    return payload.error.message || payload.error.type || `HTTP ${status}`;
+  }
+  if (typeof payload === "string" && payload.trim()) return payload.trim().slice(0, 500);
+  return `HTTP ${status}`;
+}
+async function api(method, path, body) {
+  const options = { method, headers: adminHeaders({ accept: "application/json" }) };
+  if (body !== undefined) {
+    options.headers["content-type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let payload = text;
+  try { payload = text ? JSON.parse(text) : null; } catch {}
+  if (!response.ok) throw new Error(apiErrorMessage(payload, response.status));
+  return payload;
+}
+function toast(message, kind = "") {
+  const el = $("toast");
+  el.textContent = message;
+  el.className = `toast show ${kind}`.trim();
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = "toast"; }, 3600);
+}
+function setLoadError(error) {
+  const banner = $("loadError");
+  if (!error) {
+    banner.hidden = true;
+    banner.querySelector("div").textContent = "";
+    return;
+  }
+  banner.hidden = false;
+  banner.querySelector("div").textContent = error.message || String(error);
+}
+function pathName(name) {
+  return encodeURIComponent(name);
 }
 
-function fmtChips(arr){return (arr||[]).map(p=>`<span class="chip">${esc(p)}</span>`).join("");}
-function authLabel(b){
-  if(b.codexOauth || b.authScheme==="codex-oauth") return "Codex OAuth";
-  if(b.authScheme==="oauth") return "OAuth (subscription)";
-  if(b.authScheme==="bearer") return "Bearer (openai)";
+async function loadAll({ quiet = false } = {}) {
+  try {
+    const [stateData, backends, routes, profileData] = await Promise.all([
+      api("GET", "/api/state"),
+      api("GET", "/api/backends"),
+      api("GET", "/api/routes"),
+      api("GET", "/api/profiles")
+    ]);
+    state = {
+      ...stateData,
+      backends: Array.isArray(backends) ? backends : [],
+      routes: Array.isArray(routes) ? routes : [],
+      profiles: profileData && profileData.profiles ? profileData.profiles : {},
+      activeProfile: profileData && "activeProfile" in profileData ? profileData.activeProfile : stateData.activeProfile,
+      throttleStats: stateData.throttleStats || {},
+      osEnvConflicts: stateData.osEnvConflicts || []
+    };
+    setLoadError(null);
+    renderAll();
+    if (!quiet) toast("State refreshed", "ok");
+  } catch (error) {
+    setLoadError(error);
+    $("pollBadge").textContent = "Offline";
+    $("pollBadge").className = "badge danger-badge";
+    if (!quiet) toast(error.message || "Failed to load state", "err");
+  }
+}
+
+function renderAll() {
+  renderHeader();
+  renderStats();
+  renderOAuth();
+  renderBackends();
+  renderRoutes();
+  renderProfiles();
+}
+function renderHeader() {
+  $("baseUrl").textContent = state.baseUrl || "http://127.0.0.1:8123";
+  $("modeBadge").textContent = modeLabel(state.mode);
+  $("modeBadge").className = `badge ${state.mode === "multi-backend" ? "primary-badge" : state.mode === "oauth" ? "accent" : "success"}`;
+  $("pollBadge").textContent = $("autoRefresh").checked ? "Live" : "Paused";
+  $("pollBadge").className = `badge ${$("autoRefresh").checked ? "success" : ""}`;
+  $("oauthLine").textContent = `Anthropic OAuth: ${state.oauthStatus || "unknown"}`;
+}
+function aggregateThrottle() {
+  const stats = state.throttleStats || {};
+  return Object.values(stats).reduce((acc, item) => {
+    acc.inFlight += Number(item.inFlight || 0);
+    acc.queued += Number(item.queued || 0);
+    acc.totalRetries += Number(item.totalRetries || 0);
+    return acc;
+  }, { inFlight: 0, queued: 0, totalRetries: 0 });
+}
+function renderStats() {
+  const throttle = aggregateThrottle();
+  const enabled = state.backends.filter((b) => b.enabled !== false).length;
+  const throttled = state.backends.filter((b) => b.throttle).length;
+  const stats = [
+    ["Backends", state.backends.length, `${enabled} enabled`, "primary"],
+    ["Throttle backends", throttled, "Configured in backend cards", throttled ? "success" : ""],
+    ["In flight", throttle.inFlight, "Live throttle slots", throttle.inFlight ? "warn" : ""],
+    ["Queue depth", throttle.queued, "Waiting upstream dispatch", throttle.queued ? "warn" : ""],
+    ["Total retries", throttle.totalRetries, "Since process start", throttle.totalRetries ? "danger" : ""]
+  ];
+  $("statsGrid").innerHTML = stats.map(([key, value, hint, tone]) => `
+    <article class="metric" data-tone="${esc(tone)}">
+      <div class="k">${esc(key)}</div>
+      <div class="v">${esc(value)}</div>
+      <div class="hint">${esc(hint)}</div>
+    </article>
+  `).join("");
+  $("recentList").innerHTML = `
+    <li><span class="dot warn" aria-hidden="true"></span><div><strong>Request count:</strong> not exposed by <code>/api/*</code>.</div></li>
+    <li><span class="dot warn" aria-hidden="true"></span><div><strong>Recent requests:</strong> no request-history endpoint is present in <code>server.js</code>.</div></li>
+    <li><span class="dot ok" aria-hidden="true"></span><div><strong>Throttle snapshots:</strong> in-flight, queued, and retry counts are live via <code>/api/state</code>.</div></li>
+  `;
+}
+function renderOAuth() {
+  const oauthBackends = state.backends.filter((b) => b.oauth || b.authScheme === "oauth");
+  const codexBackends = state.backends.filter((b) => b.codexOauth || b.authScheme === "codex-oauth");
+  $("oauthStatusList").innerHTML = `
+    <li><span class="dot ${/not logged in/i.test(state.oauthStatus || "") ? "warn" : "ok"}" aria-hidden="true"></span><div><strong>Claude OAuth:</strong> ${esc(state.oauthStatus || "unknown")} ${oauthBackends.length ? `<span class="soft">(${oauthBackends.map((b) => esc(b.id)).join(", ")})</span>` : ""}</div></li>
+    <li><span class="dot ${codexBackends.length ? "ok" : "warn"}" aria-hidden="true"></span><div><strong>Codex OAuth:</strong> ${codexBackends.length ? `configured on ${codexBackends.map((b) => `<code>${esc(b.id)}</code>`).join(", ")}; token is read from <code>~/.codex/auth.json</code> during test/proxy.` : `not configured. Add an <code>openai-responses</code> backend with Codex OAuth to use <code>~/.codex/auth.json</code>.`}</div></li>
+  `;
+}
+function authLabel(backend) {
+  if (backend.codexOauth || backend.authScheme === "codex-oauth") return "codex-oauth";
+  if (backend.oauth || backend.authScheme === "oauth") return "oauth";
+  if (backend.authScheme === "bearer") return "bearer";
   return "x-api-key";
 }
-
-function renderHeader(){
-  $("baseUrl").textContent = STATE.baseUrl;
-  $("modeBadge").textContent = STATE.mode;
-  $("oauthStatus").textContent = STATE.oauthStatus || "";
+function formatThrottle(backend) {
+  const snap = (state.throttleStats || {})[backend.id] || { inFlight: 0, queued: 0, totalRetries: 0 };
+  if (!backend.throttle) return `<span class="badge">Throttle off</span>`;
+  return `<span class="badge success">Throttle on</span><span class="chip"><span>in ${esc(snap.inFlight || 0)}</span></span><span class="chip"><span>q ${esc(snap.queued || 0)}</span></span><span class="chip"><span>retry ${esc(snap.totalRetries || 0)}</span></span>`;
 }
-
-function renderOauth(){
-  const has = (STATE.backends||[]).some(b=>b.oauth);
-  $("oauthCard").hidden = !has;
-}
-
-function renderBackends(){
+function renderBackends() {
   const grid = $("backendsGrid");
-  if(!STATE.backends.length){grid.innerHTML = '<p class="muted">No backends. Click “+ Add backend” (or set CLAUDE_ROUTER_API_KEY to synthesize one).</p>';return;}
-  grid.innerHTML = STATE.backends.map((b,i)=>{
-    return `<div class="card bcard" data-id="${esc(b.id)}">
-      <div class="row between">
-        <h3>${esc(b.name||b.id)}</h3>
-        <label class="toggle" title="enabled">
-          <input type="checkbox" data-act="toggle" ${b.enabled?"checked":""}>
-          <span class="track"></span>
-        </label>
-      </div>
-      <div>
-        <span class="badge ${b.format}">${b.format}</span>
-        <span class="badge ${b.authScheme==="oauth"?"oauth":""}" ${b.authScheme!=="oauth"?"hidden":""}>oauth</span>
-        <span class="badge ${b.codexOauth?"codex":""}" ${!b.codexOauth?"hidden":""}>codex</span>
-      </div>
-      <div class="up"><code>${esc(b.upstream)}</code></div>
-      <div class="key">key: <code>${esc(b.apiKey||"(none)")}</code> · ${esc(authLabel(b))}</div>
-      <div style="margin:4px 0">${fmtChips(b.modelPatterns)}${b.testModel?`<span class="muted">test: <code>${esc(b.testModel)}</code></span>`:""}</div>
-      ${b.modelMap&&Object.keys(b.modelMap).length?`<div class="muted">map: ${esc(Object.entries(b.modelMap).map(([k,v])=>k+"→"+v).join(", "))}</div>`:""}
-      <div class="acts">
-        <button class="small" data-act="test">Test</button>
-        <button class="small" data-act="edit">Edit</button>
-        <button class="small danger" data-act="delete">Delete</button>
-      </div>
-      <div class="test" data-test></div>
-    </div>`;
+  if (!state.backends.length) {
+    grid.innerHTML = `<div class="empty">No backends returned by the API. Add one or configure <code>~/.claude-router/backends.json</code>.</div>`;
+    return;
+  }
+  grid.innerHTML = state.backends.map((b) => {
+    const patterns = (b.modelPatterns || []).length ? b.modelPatterns : ["*"];
+    const mapEntries = Object.entries(b.modelMap || {});
+    return `
+      <article class="backend-card" data-backend-id="${esc(b.id)}">
+        <div class="card-head">
+          <div>
+            <h3>${esc(b.name || b.id)}</h3>
+            <div class="soft mono truncate" title="${esc(b.id)}">${esc(b.id)}</div>
+          </div>
+          <label class="switch" title="Enabled">
+            <span class="sr-only">Enable ${esc(b.name || b.id)}</span>
+            <input type="checkbox" data-backend-action="toggle" ${b.enabled !== false ? "checked" : ""}>
+            <span class="track"></span>
+          </label>
+        </div>
+        <div class="meta">
+          <span class="badge primary-badge">${esc(b.format)}</span>
+          <span class="badge accent">${esc(authLabel(b))}</span>
+          ${formatThrottle(b)}
+        </div>
+        <div class="kv-grid">
+          <div><strong>Upstream:</strong> <code class="truncate" title="${esc(b.upstream)}">${esc(b.upstream || "(unset)")}</code></div>
+          <div><strong>Key:</strong> <code>${esc(b.apiKey || "(none)")}</code></div>
+          <div><strong>Patterns:</strong><div class="chip-row">${patterns.map((p) => `<span class="chip"><span>${esc(p)}</span></span>`).join("")}</div></div>
+          <div><strong>Test model:</strong> <code>${esc(b.testModel || "(auto)")}</code></div>
+          ${mapEntries.length ? `<div><strong>Model map:</strong> ${mapEntries.map(([k, v]) => `<code>${esc(k)}:${esc(v)}</code>`).join(" ")}</div>` : ""}
+        </div>
+        <div class="row">
+          <button class="small-btn" type="button" data-backend-action="test">${icon("test")}Test</button>
+          <button class="small-btn" type="button" data-backend-action="edit">${icon("edit")}Edit</button>
+          <button class="small-btn danger" type="button" data-backend-action="delete">${icon("trash")}Delete</button>
+        </div>
+        <div class="test-result" data-test-result>Test results appear here.</div>
+      </article>
+    `;
   }).join("");
 }
-
-function renderRoutes(){
-  const body = $("routesBody");
-  const opts = STATE.backends.map(b=>`<option value="${esc(b.id)}">${esc(b.id)}</option>`).join("");
-  body.innerHTML = (STATE.routes||[]).map((r,i)=>{
-    return `<tr>
-      <td>${i+1}</td>
-      <td><code>${esc(r.pattern)}</code></td>
-      <td><code>${esc(r.backendId)}</code></td>
+function backendOptions(selected) {
+  return state.backends.map((b) => `<option value="${esc(b.id)}" ${b.id === selected ? "selected" : ""}>${esc(b.id)}</option>`).join("");
+}
+function renderRoutes() {
+  $("routeBackend").innerHTML = backendOptions("");
+  if (!state.routes.length) {
+    $("routesBody").innerHTML = `<tr><td colspan="4"><div class="empty">No routes configured. Add <code>*</code> to create a catch-all route.</div></td></tr>`;
+    return;
+  }
+  $("routesBody").innerHTML = state.routes.map((route, index) => `
+    <tr data-route-index="${index}">
       <td>
-        <button class="small" data-ract="up" data-idx="${i}" ${i===0?"disabled":""}>▲</button>
-        <button class="small" data-ract="down" data-idx="${i}" ${i===STATE.routes.length-1?"disabled":""}>▼</button>
-        <button class="small danger" data-ract="del" data-idx="${i}">✕</button>
+        <div class="order-cell">
+          <span class="mono">${index + 1}</span>
+          <button class="icon-only small-btn" type="button" data-route-action="up" aria-label="Move route ${index + 1} up" ${index === 0 ? "disabled" : ""}>${icon("up")}</button>
+          <button class="icon-only small-btn" type="button" data-route-action="down" aria-label="Move route ${index + 1} down" ${index === state.routes.length - 1 ? "disabled" : ""}>${icon("down")}</button>
+        </div>
       </td>
-    </tr>`;
-  }).join("");
-  $("newRouteBackend").innerHTML = opts;
+      <td><code>${esc(route.pattern)}</code></td>
+      <td><select data-route-action="backend" aria-label="Backend for route ${index + 1}">${backendOptions(route.backendId)}</select></td>
+      <td><button class="icon-only danger" type="button" data-route-action="delete" aria-label="Delete route ${index + 1}">${icon("trash")}</button></td>
+    </tr>
+  `).join("");
 }
-
-function profileEnvPreview(name){
-  const p = (STATE.profiles||{})[name];
-  const model = p && p.primaryModel ? p.primaryModel : "<profile primaryModel>";
-  return JSON.stringify({
-    env:{
-      ANTHROPIC_API_KEY: DUMMY_KEY,
-      ANTHROPIC_BASE_URL: STATE.baseUrl,
-      ANTHROPIC_MODEL: model
-    }
-  }, null, 2);
-}
-function renderProfiles(){
-  const sel = $("profileSelect");
-  const names = Object.keys(STATE.profiles||{});
-  sel.innerHTML = names.length ? names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("") : '<option value="">(no profiles — add in backends.json)</option>';
-  const active = STATE.activeProfile;
-  if(active && names.includes(active)) sel.value = active;
-  const cur = sel.value;
-  $("profilePreview").textContent = cur ? profileEnvPreview(cur) : "// pick a profile";
-  const p = (STATE.profiles||{})[cur];
-  $("profileStatus").textContent = active ? `Active profile: ${active} · Claude Code will use model \`${(STATE.profiles[active]||{}).primaryModel||"?"}\` on next session.` : "No active profile. Claude Code uses whatever its env/settings say.";
+function renderProfiles() {
+  const names = Object.keys(state.profiles || {});
+  if (selectedProfileName && !state.profiles[selectedProfileName]) selectedProfileName = null;
+  if (!selectedProfileName) selectedProfileName = state.activeProfile && state.profiles[state.activeProfile] ? state.activeProfile : (names[0] || null);
+  $("profileList").innerHTML = names.length ? names.map((name) => {
+    const profile = state.profiles[name] || {};
+    const active = state.activeProfile === name;
+    const selected = selectedProfileName === name;
+    return `<button class="profile-item" type="button" data-profile-name="${esc(name)}" aria-pressed="${selected ? "true" : "false"}">
+      <span>${active ? `<span class="badge success">Active</span>` : ""} <strong>${esc(name)}</strong><br><span class="soft">${esc(profile.primaryModel || "no model")}</span></span>
+    </button>`;
+  }).join("") : `<div class="empty">No profiles. Create one to write Claude Code settings.</div>`;
+  fillProfileEditor(selectedProfileName);
+  const activeProfile = state.activeProfile && state.profiles[state.activeProfile] ? state.profiles[state.activeProfile] : null;
+  $("profileStatus").innerHTML = activeProfile
+    ? `Active profile: <code>${esc(state.activeProfile)}</code>. Claude Code will use <code>${esc(activeProfile.primaryModel || "?")}</code> next session.`
+    : `No active profile. Claude Code will use its current environment or settings.`;
+  const conflicts = state.osEnvConflicts || [];
   const banner = $("conflictBanner");
-  const conflicts = STATE.osEnvConflicts||[];
-  if(conflicts.length){
+  if (conflicts.length) {
     banner.hidden = false;
-    banner.innerHTML = `⚠ OS environment overrides the file — Claude Code may bypass the router. Set in your shell: <code>${conflicts.map(c=>c+"=").join("</code> · <code>")}</code><br><span class="muted">cmd: <code>set ANTHROPIC_BASE_URL=</code> · PowerShell: <code>Remove-Item Env:ANTHROPIC_BASE_URL</code></span>`;
-  } else { banner.hidden = true; }
-}
-
-async function loadState(){
-  STATE = await api("GET","/api/state");
-  renderHeader(); renderOauth(); renderBackends(); renderRoutes(); renderProfiles();
-}
-
-// --- backends grid events ---
-$("backendsGrid").addEventListener("click", async (e)=>{
-  const card = e.target.closest("[data-id]"); if(!card) return;
-  const id = card.getAttribute("data-id");
-  const act = e.target.getAttribute("data-act");
-  if(act==="test"){
-    const box = card.querySelector("[data-test]");
-    box.innerHTML = '<span class="muted">testing…</span>';
-    try{
-      const r = await api("POST",`/api/backends/${encodeURIComponent(id)}/test`);
-      box.innerHTML = r.ok ? `<span class="ok">✓ ${r.latencyMs}ms · model=${esc(r.model)}${r.sample!=null?" · sample="+esc(JSON.stringify(r.sample)):""}</span>` : `<span class="warn">✗ ${esc(r.error)}</span>`;
-    }catch(err){box.innerHTML = `<span class="warn">✗ ${esc(err.message)}</span>`;}
-    return;
+    banner.querySelector("div").innerHTML = `OS environment overrides detected: ${conflicts.map((c) => `<code>${esc(c)}</code>`).join(" ")}. Unset these before launching Claude Code if you expect the profile file to win.`;
+  } else {
+    banner.hidden = true;
+    banner.querySelector("div").textContent = "";
   }
-  if(act==="edit"){ openModal(STATE.backends.find(b=>b.id===id)); return; }
-  if(act==="delete"){
-    if(!confirm(`Delete backend "${id}"?`)) return;
-    try{ await api("DELETE",`/api/backends/${encodeURIComponent(id)}`); await loadState(); }
-    catch(err){ alert(err.message); }
-    return;
+  updateProfilePreview();
+}
+function fillProfileEditor(name) {
+  const profile = name ? state.profiles[name] : null;
+  $("profileName").value = name || "";
+  $("profileModel").value = profile ? (profile.primaryModel || "") : "";
+  $("profileEnv").value = profile ? stringifyEnv(profile.env || {}) : "";
+  $("profileRoutes").value = profile ? stringifyRouteOverrides(profile.routeOverrides || []) : "";
+}
+function stringifyEnv(env) {
+  return Object.entries(env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+}
+function parseEnv(text) {
+  const env = {};
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const index = line.indexOf("=");
+    if (index <= 0) continue;
+    env[line.slice(0, index).trim()] = line.slice(index + 1).trim();
   }
-});
-$("backendsGrid").addEventListener("change", async (e)=>{
-  if(e.target.getAttribute("data-act")!=="toggle") return;
-  const card = e.target.closest("[data-id]"); const id = card.getAttribute("data-id");
-  try{ await api("PUT",`/api/backends/${encodeURIComponent(id)}`, {enabled: e.target.checked}); }
-  catch(err){ alert(err.message); }
-});
-
-// --- routes events ---
-$("routesBody").addEventListener("click", async (e)=>{
-  const act = e.target.getAttribute("data-ract"); if(!act) return;
-  const idx = parseInt(e.target.getAttribute("data-idx"),10);
-  if(act==="del"){
-    try{ await api("DELETE",`/api/routes/${idx}`); await loadState(); }catch(err){alert(err.message);}
-    return;
-  }
-  if(act==="up"||act==="down"){
-    const n = STATE.routes.length; const j = act==="up"?idx-1:idx+1;
-    if(j<0||j>=n) return;
-    const order = STATE.routes.map((_,i)=>i);
-    [order[idx],order[j]]=[order[j],order[idx]];
-    try{ await api("PUT","/api/routes/order",{order}); await loadState(); }catch(err){alert(err.message);}
-  }
-});
-$("addRouteBtn").addEventListener("click", async ()=>{
-  const pattern = $("newRoutePattern").value.trim() || "*";
-  const backendId = $("newRouteBackend").value;
-  if(!backendId){alert("Add a backend first.");return;}
-  try{ await api("POST","/api/routes",{pattern,backendId}); $("newRoutePattern").value=""; await loadState(); }
-  catch(err){alert(err.message);}
-});
-
-// --- profiles events ---
-$("profileSelect").addEventListener("change", ()=>{ $("profilePreview").textContent = profileEnvPreview($("profileSelect").value); });
-$("applyProfileBtn").addEventListener("click", async ()=>{
-  const name = $("profileSelect").value; if(!name){alert("No profile selected.");return;}
-  try{
-    const r = await api("POST",`/api/profiles/${encodeURIComponent(name)}/apply`);
-    await loadState();
-    let msg = `Wrote ${r.writtenPath}`;
-    if(r.conflicts&&r.conflicts.length) msg += `\n⚠ OS env conflict: ${r.conflicts.join(", ")} — Claude Code may bypass the router. Unset in your shell.`;
-    alert(msg);
-  }catch(err){alert(err.message);}
-});
-$("restoreProfileBtn").addEventListener("click", async ()=>{
-  try{ const r = await api("POST","/api/profiles/restore"); await loadState(); alert(`Restored ${r.restoredPath}`); }
-  catch(err){alert(err.message);}
-});
-
-// --- copy baseUrl ---
-$("copyBtn").addEventListener("click", async ()=>{
-  try{ await navigator.clipboard.writeText(STATE.baseUrl); const ok=$("copyOk"); ok.classList.add("show"); setTimeout(()=>ok.classList.remove("show"),1200); }
-  catch{ /* clipboard may be blocked; ignore */ }
-});
-
-// --- backend modal ---
-function parseMap(text){
-  const out = {};
-  (text||"").split(/\n/).forEach(line=>{
-    const m = line.trim(); if(!m) return;
-    const i = m.indexOf("="); if(i<0) return;
-    out[m.slice(0,i).trim()] = m.slice(i+1).trim();
-  });
-  return out;
+  return env;
 }
-function stringifyMap(obj){
-  return Object.entries(obj||{}).map(([k,v])=>`${k}=${v}`).join("\n");
+function stringifyRouteOverrides(routes) {
+  return (routes || []).map((r) => `${r.pattern}: ${r.backendId}`).join("\n");
 }
-function openModal(b){
-  const editing = !!b;
-  $("modalTitle").textContent = editing ? "Edit backend" : "Add backend";
-  $("f_id_orig").value = editing ? b.id : "";
-  $("f_id").value = editing ? b.id : "";
-  $("f_id").disabled = editing; // id immutable on edit
-  $("f_name").value = editing ? b.name : "";
-  $("f_format").value = editing ? b.format : "anthropic";
-  $("f_upstream").value = editing ? b.upstream : "";
-  $("f_apiKey").value = ""; // never prefill the key; blank-on-edit preserves it
-  $("f_apiKey").placeholder = editing ? "leave blank to keep stored key" : "sk-…";
-  $("f_oauth").checked = editing ? !!b.oauth : false;
-  $("f_codexOauth").checked = editing ? !!b.codexOauth : false;
-  $("f_modelPatterns").value = editing ? (b.modelPatterns||[]).join(", ") : "";
-  $("f_modelMap").value = editing ? stringifyMap(b.modelMap) : "";
-  $("f_testModel").value = editing ? (b.testModel||"") : "";
-  syncFormatFields();
-  $("backendModal").classList.add("open");
-}
-function closeModal(){$("backendModal").classList.remove("open");}
-function syncFormatFields(){
-  const fmt = $("f_format").value;
-  $("codexHint").hidden = fmt !== "openai";
-  $("f_codexOauthWrap").hidden = fmt !== "openai-responses";
-}
-$("f_format").addEventListener("change", syncFormatFields);
-$("addBackendBtn").addEventListener("click", ()=>openModal(null));
-$("modalCancel").addEventListener("click", closeModal);
-$("backendModal").addEventListener("click",(e)=>{if(e.target.id==="backendModal")closeModal();});
-$("modalSave").addEventListener("click", async ()=>{
-  const id = $("f_id").value.trim();
-  const orig = $("f_id_orig").value;
-  const payload = {
-    name: $("f_name").value.trim() || id,
-    format: $("f_format").value,
-    upstream: $("f_upstream").value.trim(),
-    oauth: $("f_format").value==="anthropic" && $("f_oauth").checked,
-    codexOauth: $("f_format").value==="openai-responses" && $("f_codexOauth").checked,
-    modelPatterns: $("f_modelPatterns").value.split(",").map(s=>s.trim()).filter(Boolean),
-    modelMap: parseMap($("f_modelMap").value),
-    testModel: $("f_testModel").value.trim(),
-  };
-  const key = $("f_apiKey").value;
-  if(key) payload.apiKey = key; // blank → omit (PUT preserves; POST requires user intent)
-  try{
-    if(orig){ await api("PUT",`/api/backends/${encodeURIComponent(orig)}`, payload); }
-    else{
-      if(!id){alert("id is required");return;}
-      payload.id = id;
-      await api("POST","/api/backends", payload);
+function parseRouteOverrides(text) {
+  const routes = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    let index = line.indexOf(":");
+    if (index < 0) index = line.indexOf("=");
+    if (index < 0) {
+      const parts = line.split(/\s+/);
+      if (parts.length >= 2) routes.push({ pattern: parts[0], backendId: parts[1] });
+      continue;
     }
-    closeModal(); await loadState();
-  }catch(err){alert(err.message);}
-});
+    const pattern = line.slice(0, index).trim();
+    const backendId = line.slice(index + 1).trim();
+    if (pattern && backendId) routes.push({ pattern, backendId });
+  }
+  return routes;
+}
+function updateProfilePreview() {
+  const env = {
+    ANTHROPIC_BASE_URL: state.baseUrl || "http://127.0.0.1:8123",
+    ANTHROPIC_API_KEY: DUMMY_KEY,
+    ANTHROPIC_MODEL: $("profileModel").value.trim() || "<primaryModel>",
+    ...parseEnv($("profileEnv").value)
+  };
+  $("profilePreview").textContent = JSON.stringify({ env }, null, 2);
+}
 
-// init
-$("codexHint").innerHTML = 'Codex OAuth is pinned to <code>https://chatgpt.com/backend-api/codex/responses</code> and sends upstream model <code>gpt-5.5</code>.';
-loadState().catch(err=>{
-  document.body.insertAdjacentHTML("afterbegin", `<div class="banner">Failed to load /api/state: ${esc(err.message)} — is claude-router running on this port?</div>`);
-});
+function modelMapToText(map) {
+  return Object.entries(map || {}).map(([key, value]) => `${key}: ${value}`).join("\n");
+}
+function parseModelMap(text) {
+  const map = {};
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    let index = line.indexOf(":");
+    if (index < 0) index = line.indexOf("=");
+    if (index <= 0) continue;
+    const key = line.slice(0, index).trim();
+    const value = line.slice(index + 1).trim();
+    if (key && value) map[key] = value;
+  }
+  return map;
+}
+function readNumber(id) {
+  const value = $(id).value;
+  return value === "" ? undefined : Number(value);
+}
+function setNumber(id, value) {
+  $(id).value = value == null ? "" : String(value);
+}
+function syncBackendAuthFields() {
+  const format = $("backendFormat").value;
+  $("backendOauth").disabled = format !== "anthropic";
+  $("backendCodexOauth").disabled = format !== "openai-responses";
+  if (format !== "anthropic") $("backendOauth").checked = false;
+  if (format !== "openai-responses") $("backendCodexOauth").checked = false;
+}
+function openBackendModal(backend) {
+  lastFocus = document.activeElement;
+  const editing = !!backend;
+  $("backendModalTitle").textContent = editing ? `Edit backend ${backend.id}` : "Add backend";
+  $("backendOriginalId").value = editing ? backend.id : "";
+  $("backendId").value = editing ? backend.id : "";
+  $("backendId").disabled = editing;
+  $("backendName").value = editing ? (backend.name || backend.id) : "";
+  $("backendFormat").value = editing ? backend.format : "anthropic";
+  $("backendEnabled").value = editing && backend.enabled === false ? "false" : "true";
+  $("backendUpstream").value = editing ? (backend.upstream || "") : DEFAULT_UPSTREAMS.anthropic;
+  $("backendApiKey").value = "";
+  $("backendApiKey").type = "password";
+  $("backendOauth").checked = editing ? !!backend.oauth : false;
+  $("backendCodexOauth").checked = editing ? !!backend.codexOauth : false;
+  $("backendPatterns").value = editing ? (backend.modelPatterns || []).join(", ") : "";
+  $("backendTestModel").value = editing ? (backend.testModel || "") : "";
+  $("backendModelMap").value = editing ? modelMapToText(backend.modelMap || {}) : "";
+  $("backendThrottle").checked = editing ? !!backend.throttle : false;
+  setNumber("backendMaxConcurrency", editing ? backend.maxConcurrency : THROTTLE_DEFAULTS.maxConcurrency);
+  setNumber("backendMaxRetries", editing ? backend.maxRetries : THROTTLE_DEFAULTS.maxRetries);
+  setNumber("backendBaseBackoffMs", editing ? backend.baseBackoffMs : THROTTLE_DEFAULTS.baseBackoffMs);
+  setNumber("backendMaxBackoffMs", editing ? backend.maxBackoffMs : THROTTLE_DEFAULTS.maxBackoffMs);
+  setNumber("backendMinIntervalMs", editing ? backend.minIntervalMs : THROTTLE_DEFAULTS.minIntervalMs);
+  syncBackendAuthFields();
+  $("backendModal").hidden = false;
+  $("backendId").focus();
+}
+function closeBackendModal() {
+  $("backendModal").hidden = true;
+  if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
+}
+function backendPayloadFromForm() {
+  const format = $("backendFormat").value;
+  const payload = {
+    name: $("backendName").value.trim() || $("backendId").value.trim(),
+    format,
+    upstream: $("backendUpstream").value.trim(),
+    enabled: $("backendEnabled").value === "true",
+    oauth: format === "anthropic" && $("backendOauth").checked,
+    codexOauth: format === "openai-responses" && $("backendCodexOauth").checked,
+    modelPatterns: $("backendPatterns").value.split(",").map((s) => s.trim()).filter(Boolean),
+    modelMap: parseModelMap($("backendModelMap").value),
+    testModel: $("backendTestModel").value.trim(),
+    throttle: $("backendThrottle").checked,
+    maxConcurrency: readNumber("backendMaxConcurrency"),
+    maxRetries: readNumber("backendMaxRetries"),
+    baseBackoffMs: readNumber("backendBaseBackoffMs"),
+    maxBackoffMs: readNumber("backendMaxBackoffMs"),
+    minIntervalMs: readNumber("backendMinIntervalMs")
+  };
+  const key = $("backendApiKey").value;
+  if (key) payload.apiKey = key;
+  return payload;
+}
+
+async function testBackend(card, id) {
+  const result = card.querySelector("[data-test-result]");
+  const button = card.querySelector('[data-backend-action="test"]');
+  button.disabled = true;
+  result.textContent = "Testing backend with a 1-token ping.";
+  try {
+    const data = await api("POST", `/api/backends/${pathName(id)}/test`);
+    if (data.ok) {
+      result.innerHTML = `<span class="badge success">Pass</span> <strong>${esc(data.latencyMs)}ms</strong> <span class="soft">model <code>${esc(data.model || "")}</code></span>${data.sample != null ? `<br><span class="soft">Sample:</span> <code>${esc(JSON.stringify(data.sample))}</code>` : ""}`;
+    } else {
+      result.innerHTML = `<span class="badge danger-badge">Fail</span> ${esc(data.error || "Backend test failed")}`;
+    }
+  } catch (error) {
+    result.innerHTML = `<span class="badge danger-badge">Fail</span> ${esc(error.message)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+async function reorderRoutes(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= state.routes.length) return;
+  const order = state.routes.map((_, i) => i);
+  [order[index], order[target]] = [order[target], order[index]];
+  await api("PUT", "/api/routes/order", { order });
+  await loadAll({ quiet: true });
+  toast("Route order updated", "ok");
+}
+async function replaceRouteBackend(index, backendId) {
+  const route = state.routes[index];
+  if (!route || route.backendId === backendId) return;
+  await api("DELETE", `/api/routes/${index}`);
+  await api("POST", "/api/routes", { pattern: route.pattern, backendId });
+  const n = state.routes.length;
+  const order = [];
+  for (let position = 0; position < n; position++) {
+    if (position === index) order.push(n - 1);
+    else if (position < index) order.push(position);
+    else order.push(position - 1);
+  }
+  await api("PUT", "/api/routes/order", { order });
+  await loadAll({ quiet: true });
+  toast("Route backend changed", "ok");
+}
+async function saveProfile(event) {
+  event.preventDefault();
+  const name = $("profileName").value.trim();
+  if (!PROFILE_UI_RE.test(name)) {
+    toast("Use profile names with letters, digits, dot, underscore, or hyphen; avoid spaces for URL-safe API paths.", "warn");
+    $("profileName").focus();
+    return;
+  }
+  const payload = {
+    name,
+    primaryModel: $("profileModel").value.trim(),
+    env: parseEnv($("profileEnv").value),
+    routeOverrides: parseRouteOverrides($("profileRoutes").value)
+  };
+  if (!payload.primaryModel) {
+    toast("Profile primary model is required", "warn");
+    $("profileModel").focus();
+    return;
+  }
+  const exists = !!state.profiles[name];
+  if (exists) {
+    await api("PUT", `/api/profiles/${pathName(name)}`, payload);
+    toast("Profile updated", "ok");
+  } else {
+    await api("POST", "/api/profiles", payload);
+    selectedProfileName = name;
+    toast("Profile created", "ok");
+  }
+  await loadAll({ quiet: true });
+}
+
+function bindEvents() {
+  $("refreshNow").addEventListener("click", () => loadAll());
+  $("autoRefresh").addEventListener("change", () => renderHeader());
+  $("adminToken").addEventListener("input", () => {
+    sessionStorage.setItem("claudeRouterAdminToken", $("adminToken").value);
+  });
+  $("copyBaseUrl").addEventListener("click", async () => {
+    const value = state.baseUrl || $("baseUrl").textContent;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast("Router base URL copied", "ok");
+    } catch {
+      const temp = document.createElement("textarea");
+      temp.value = value;
+      document.body.appendChild(temp);
+      temp.select();
+      document.execCommand("copy");
+      temp.remove();
+      toast("Router base URL copied", "ok");
+    }
+  });
+  $("themeToggle").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("claudeRouterTheme", next);
+    $("themeToggle").textContent = `Theme: ${next}`;
+  });
+  $("exchangeForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const code = $("exchangeCode").value.trim();
+    if (!code) {
+      toast("Paste code#state first", "warn");
+      return;
+    }
+    try {
+      const response = await fetch("/exchange", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ code })
+      });
+      if (!response.ok) throw new Error((await response.text()).replace(/<[^>]*>/g, " ").trim() || `HTTP ${response.status}`);
+      $("exchangeCode").value = "";
+      await loadAll({ quiet: true });
+      toast("OAuth code submitted", "ok");
+    } catch (error) {
+      toast(error.message || "OAuth exchange failed", "err");
+    }
+  });
+  $("logoutForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const response = await fetch("/logout", { method: "POST" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await loadAll({ quiet: true });
+      toast("Logged out", "ok");
+    } catch (error) {
+      toast(error.message || "Logout failed", "err");
+    }
+  });
+  $("backendsGrid").addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-backend-action]");
+    if (!action) return;
+    const card = event.target.closest("[data-backend-id]");
+    const id = card && card.dataset.backendId;
+    if (!id) return;
+    const backend = state.backends.find((b) => b.id === id);
+    const type = action.dataset.backendAction;
+    if (type === "test") return testBackend(card, id);
+    if (type === "edit") return openBackendModal(backend);
+    if (type === "delete") {
+      if (!confirm(`Delete backend "${id}"? Remove routes that reference it first.`)) return;
+      await api("DELETE", `/api/backends/${pathName(id)}`);
+      await loadAll({ quiet: true });
+      toast("Backend deleted", "ok");
+    }
+  });
+  $("backendsGrid").addEventListener("change", async (event) => {
+    if (!event.target.matches('[data-backend-action="toggle"]')) return;
+    const card = event.target.closest("[data-backend-id]");
+    const id = card && card.dataset.backendId;
+    const checked = event.target.checked;
+    try {
+      await api("PUT", `/api/backends/${pathName(id)}`, { enabled: checked });
+      await loadAll({ quiet: true });
+      toast(checked ? "Backend enabled" : "Backend disabled", "ok");
+    } catch (error) {
+      event.target.checked = !checked;
+      toast(error.message, "err");
+    }
+  });
+  $("addBackend").addEventListener("click", () => openBackendModal(null));
+  $("closeBackendModal").addEventListener("click", closeBackendModal);
+  $("cancelBackend").addEventListener("click", closeBackendModal);
+  $("backendModal").addEventListener("click", (event) => {
+    if (event.target.id === "backendModal") closeBackendModal();
+  });
+  $("backendModal").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeBackendModal();
+  });
+  $("backendFormat").addEventListener("change", () => {
+    const format = $("backendFormat").value;
+    const upstream = $("backendUpstream").value.trim();
+    if (!upstream || Object.values(DEFAULT_UPSTREAMS).includes(upstream)) $("backendUpstream").value = DEFAULT_UPSTREAMS[format];
+    syncBackendAuthFields();
+  });
+  $("toggleKey").addEventListener("click", () => {
+    $("backendApiKey").type = $("backendApiKey").type === "password" ? "text" : "password";
+  });
+  $("backendForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const original = $("backendOriginalId").value;
+    const id = $("backendId").value.trim();
+    if (!original && !id) {
+      toast("Backend ID is required", "warn");
+      $("backendId").focus();
+      return;
+    }
+    const payload = backendPayloadFromForm();
+    if (original) {
+      await api("PUT", `/api/backends/${pathName(original)}`, payload);
+      toast("Backend updated", "ok");
+    } else {
+      payload.id = id;
+      await api("POST", "/api/backends", payload);
+      toast("Backend created", "ok");
+    }
+    closeBackendModal();
+    await loadAll({ quiet: true });
+  });
+  $("routesBody").addEventListener("click", async (event) => {
+    const control = event.target.closest("[data-route-action]");
+    if (!control || control.tagName === "SELECT") return;
+    const row = event.target.closest("[data-route-index]");
+    const index = Number(row && row.dataset.routeIndex);
+    const action = control.dataset.routeAction;
+    if (action === "up") return reorderRoutes(index, -1);
+    if (action === "down") return reorderRoutes(index, 1);
+    if (action === "delete") {
+      if (!confirm(`Delete route #${index + 1}?`)) return;
+      await api("DELETE", `/api/routes/${index}`);
+      await loadAll({ quiet: true });
+      toast("Route deleted", "ok");
+    }
+  });
+  $("routesBody").addEventListener("change", async (event) => {
+    if (!event.target.matches('select[data-route-action="backend"]')) return;
+    const row = event.target.closest("[data-route-index]");
+    const index = Number(row && row.dataset.routeIndex);
+    try {
+      await replaceRouteBackend(index, event.target.value);
+    } catch (error) {
+      toast(error.message, "err");
+      await loadAll({ quiet: true });
+    }
+  });
+  $("addRouteForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const pattern = $("routePattern").value.trim() || "*";
+    const backendId = $("routeBackend").value;
+    if (!backendId) {
+      toast("Add a backend before adding routes", "warn");
+      return;
+    }
+    await api("POST", "/api/routes", { pattern, backendId });
+    $("routePattern").value = "";
+    await loadAll({ quiet: true });
+    toast("Route added", "ok");
+  });
+  $("profileList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-profile-name]");
+    if (!button) return;
+    selectedProfileName = button.dataset.profileName;
+    renderProfiles();
+  });
+  $("newProfile").addEventListener("click", () => {
+    selectedProfileName = null;
+    fillProfileEditor(null);
+    updateProfilePreview();
+    $("profileName").focus();
+  });
+  $("profileForm").addEventListener("submit", async (event) => {
+    try { await saveProfile(event); }
+    catch (error) { toast(error.message, "err"); }
+  });
+  ["profileModel", "profileEnv"].forEach((id) => $(id).addEventListener("input", updateProfilePreview));
+  $("deleteProfile").addEventListener("click", async () => {
+    const name = $("profileName").value.trim();
+    if (!name || !state.profiles[name]) {
+      toast("Select an existing profile to delete", "warn");
+      return;
+    }
+    if (!confirm(`Delete profile "${name}"?`)) return;
+    await api("DELETE", `/api/profiles/${pathName(name)}`);
+    selectedProfileName = null;
+    await loadAll({ quiet: true });
+    toast("Profile deleted", "ok");
+  });
+  $("applyProfile").addEventListener("click", async () => {
+    const name = $("profileName").value.trim();
+    if (!name || !state.profiles[name]) {
+      toast("Save or select a profile before applying", "warn");
+      return;
+    }
+    const result = await api("POST", `/api/profiles/${pathName(name)}/apply`);
+    await loadAll({ quiet: true });
+    const conflicts = result.conflicts && result.conflicts.length ? ` Conflicts: ${result.conflicts.join(", ")}.` : "";
+    toast(`Applied profile to ${result.writtenPath}.${conflicts}`, conflicts ? "warn" : "ok");
+  });
+  $("restoreProfile").addEventListener("click", async () => {
+    if (!confirm("Restore the original Claude settings backup?")) return;
+    const result = await api("POST", "/api/profiles/restore");
+    await loadAll({ quiet: true });
+    toast(`Restored ${result.restoredPath}`, "ok");
+  });
+}
+
+function init() {
+  const storedTheme = localStorage.getItem("claudeRouterTheme");
+  if (storedTheme === "light" || storedTheme === "dark") document.documentElement.dataset.theme = storedTheme;
+  $("themeToggle").textContent = `Theme: ${document.documentElement.dataset.theme}`;
+  $("adminToken").value = sessionStorage.getItem("claudeRouterAdminToken") || "";
+  bindEvents();
+  renderAll();
+  loadAll({ quiet: true });
+  pollTimer = setInterval(() => {
+    const editingProfile = document.activeElement && document.activeElement.closest && document.activeElement.closest("#profileForm");
+    if ($("autoRefresh").checked && $("backendModal").hidden && !editingProfile) loadAll({ quiet: true });
+  }, 3000);
+  window.addEventListener("beforeunload", () => clearInterval(pollTimer));
+}
+
+document.addEventListener("DOMContentLoaded", init);
 </script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+{
+  "name": "claude-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal local proxy: run Claude Code on your Claude Pro/Max subscription (OAuth) via a localhost Anthropic-API endpoint.",
+  "bin": { "claude-router": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "selftest": "node server.js --selftest"
+  },
+  "engines": { "node": ">=18" }
+}

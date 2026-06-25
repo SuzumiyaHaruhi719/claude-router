@@ -54,6 +54,7 @@ const CFG_DIR   = path.join(os.homedir(), ".claude-router");          // creds +
 const CRED_FILE = path.join(CFG_DIR, "creds.json");                   // existing OAuth tokens
 const CFG_FILE  = path.join(CFG_DIR, "backends.json");                // NEW — multi-backend config
 const CODEX_AUTH_FILE = path.join(os.homedir(), ".codex", "auth.json"); // Codex CLI OAuth token (read-only)
+const CC_CRED_FILE = path.join(os.homedir(), ".claude", ".credentials.json"); // Claude Code CLI OAuth token (read-only reuse — idiot-proof default)
 const CC_SETTINGS        = path.join(os.homedir(), ".claude", "settings.json"); // CC-Switch target
 const CC_SETTINGS_LEGACY = path.join(os.homedir(), ".claude", "claude.json");   // CC-Switch fallback
 const CC_BACKUP  = path.join(CFG_DIR, "settings-backup.json");        // pre-takeover backup
@@ -73,8 +74,24 @@ const THROTTLE_DEFAULTS = {
   minIntervalMs: 350,
 };
 
-// --- credential store (existing, unchanged) -------------------------------------
+// --- credential store ------------------------------------------------------------
+// Idiot-proof default: the router reuses the Claude Code CLI's own login
+// (~/.claude/.credentials.json -> claudeAiOauth.accessToken) when present, so the
+// user never has to paste a code#state via the webui — "logged into Claude Code"
+// IS the router's login. Read-only: the Claude Code CLI refreshes the token itself
+// (we never POST to the token endpoint, so we never rotate/compete with the CLI).
+// Falls back to the router's own creds.json (webui login, refreshable) only if the
+// Claude Code file is absent (e.g. Claude Code not installed / not logged in).
+function loadClaudeCodeCreds() {
+  try {
+    const o = JSON.parse(fs.readFileSync(CC_CRED_FILE, "utf8")).claudeAiOauth;
+    if (!o || !o.accessToken) return null;
+    return { access_token: o.accessToken, expires_at: Number(o.expiresAt || 0), read_only: true };
+  } catch { return null; }
+}
 function loadCreds() {
+  const cc = loadClaudeCodeCreds();
+  if (cc && cc.access_token) return cc;           // default: reuse Claude Code's login
   try { return JSON.parse(fs.readFileSync(CRED_FILE, "utf8")); } catch { return null; }
 }
 function saveCreds(c) {
@@ -205,10 +222,20 @@ async function refreshCreds(creds) {
   return c;
 }
 
-// Returns a usable access token, refreshing if it's within 60s of expiry. null = login needed.
+// Returns a usable access token. For the router's own creds.json (webui login),
+// refresh if within 60s of expiry. For read-only Claude-Code-reused creds, never
+// refresh (the CLI does it) — just re-read the file if it looks expired.
 async function getAccessToken() {
   let c = loadCreds();
   if (!c || !c.access_token) return null;
+  if (c.read_only) {
+    if (Date.now() > (c.expires_at || 0) - 60_000) {
+      // possibly stale — re-read (Claude Code may have refreshed it since)
+      const fresh = loadCreds();
+      if (fresh && fresh.access_token) return fresh.access_token;
+    }
+    return c.access_token;
+  }
   if (Date.now() > (c.expires_at || 0) - 60_000 && c.refresh_token) {
     try { c = await refreshCreds(c); } catch { return null; }
   }

@@ -60,6 +60,18 @@ const CC_BACKUP  = path.join(CFG_DIR, "settings-backup.json");        // pre-tak
 const ADMIN_TOKEN = process.env.CLAUDE_ROUTER_ADMIN_TOKEN || "";      // optional guard for /api writes
 const DUMMY_KEY = "claude-router"; // non-empty dummy Claude Code sends; router ignores it
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;                            // backend id validation
+const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
+const CODEX_RESPONSES_UPSTREAM = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_RESPONSES_MODEL = "gpt-5.5";
+const GLM_ANTHROPIC_UPSTREAM = "https://dashscope.aliyuncs.com/apps/anthropic";
+const GLM_OPENAI_COMPAT_UPSTREAM = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const THROTTLE_DEFAULTS = {
+  maxConcurrency: 5,
+  maxRetries: 3,
+  baseBackoffMs: 800,
+  maxBackoffMs: 10000,
+  minIntervalMs: 350,
+};
 
 // --- credential store (existing, unchanged) -------------------------------------
 function loadCreds() {
@@ -314,6 +326,7 @@ function curlFetch(url, { method = "GET", headers = {}, body } = {}) {
           const resp = {
             status, ok: status >= 200 && status < 300, headers: hdrs, body: bodyObj,
             async text() { const parts = []; for (;;) { const r = await bodyObj.getReader().read(); if (r.done) break; parts.push(r.value); } return Buffer.concat(parts).toString("utf8"); },
+            async json() { return JSON.parse(await this.text()); },
           };
           if (rest.length) queued.push(rest);
           resolved = true;
@@ -487,6 +500,149 @@ async function anthropicFetch(url, opts) {
   return nodeProxyFetch(url, opts);
 }
 
+function clampInt(value, fallback, min, max) {
+  const n = Number(value);
+  const v = Number.isFinite(n) ? Math.trunc(n) : fallback;
+  return Math.max(min, max == null ? v : Math.min(max, v));
+}
+
+function throttleConfigFromBackend(b) {
+  const maxConcurrency = clampInt(b.maxConcurrency, THROTTLE_DEFAULTS.maxConcurrency, 1, 50);
+  const maxRetries = clampInt(b.maxRetries, THROTTLE_DEFAULTS.maxRetries, 0, 6);
+  const baseBackoffMs = clampInt(b.baseBackoffMs, THROTTLE_DEFAULTS.baseBackoffMs, 0, 60_000);
+  const maxBackoffMs = Math.max(baseBackoffMs, clampInt(b.maxBackoffMs, THROTTLE_DEFAULTS.maxBackoffMs, 0, 120_000));
+  const minIntervalMs = clampInt(b.minIntervalMs, THROTTLE_DEFAULTS.minIntervalMs, 0, 60_000);
+  return { maxConcurrency, maxRetries, baseBackoffMs, maxBackoffMs, minIntervalMs };
+}
+
+const throttleStates = new Map();
+function throttleState(id) {
+  const key = String(id || "default");
+  let st = throttleStates.get(key);
+  if (!st) {
+    st = { inFlight: 0, queue: [], nextDispatchAt: 0, rateChain: Promise.resolve(), totalRetries: 0 };
+    throttleStates.set(key, st);
+  }
+  return st;
+}
+function throttleSnapshot(id) {
+  const st = throttleState(id);
+  return { inFlight: st.inFlight, queued: st.queue.length, totalRetries: st.totalRetries };
+}
+function throttleStatsForConfig(cfg) {
+  const out = {};
+  for (const b of cfg.backends || []) if (b.throttle) out[b.id] = throttleSnapshot(b.id);
+  return out;
+}
+function acquireThrottleSlot(st, cfg) {
+  return new Promise((resolve) => {
+    if (st.inFlight < cfg.maxConcurrency) { st.inFlight++; resolve(); return; }
+    st.queue.push(() => { st.inFlight++; resolve(); });
+  });
+}
+function releaseThrottleSlot(st) {
+  st.inFlight = Math.max(0, st.inFlight - 1);
+  const next = st.queue.shift();
+  if (next) next();
+}
+function throttleRateGate(st, cfg) {
+  const p = st.rateChain.then(async () => {
+    const wait = Math.max(0, st.nextDispatchAt - Date.now());
+    if (wait > 0) await sleep(wait);
+    st.nextDispatchAt = Date.now() + cfg.minIntervalMs;
+  });
+  st.rateChain = p.catch(() => {});
+  return p;
+}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))); }
+function headerGet(headers, name) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") return headers.get(name) || headers.get(String(name).toLowerCase()) || "";
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === String(name).toLowerCase());
+  return key ? headers[key] : "";
+}
+function throttleBackoffMs(attempt, cfg, retryAfterHeader) {
+  let ms = cfg.baseBackoffMs * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
+  if (retryAfterHeader) {
+    const ra = parseFloat(retryAfterHeader);
+    if (!Number.isNaN(ra)) ms = Math.max(ms, ra * 1000);
+  }
+  return Math.min(ms, cfg.maxBackoffMs);
+}
+function isThrottleRetryableStatus(status) {
+  return status === 429 || status === 502 || status === 503 || status === 504 || status === 529;
+}
+function wrapThrottleResponse(resp, release) {
+  let released = false;
+  const done = () => { if (!released) { released = true; release(); } };
+  const body = resp.body && typeof resp.body.getReader === "function" ? {
+    getReader() {
+      const reader = resp.body.getReader();
+      return {
+        async read() {
+          try {
+            const r = await reader.read();
+            if (r.done) done();
+            return r;
+          } catch (e) { done(); throw e; }
+        },
+        releaseLock() { if (typeof reader.releaseLock === "function") return reader.releaseLock(); },
+        cancel(reason) { done(); return typeof reader.cancel === "function" ? reader.cancel(reason) : undefined; },
+      };
+    },
+  } : null;
+  return {
+    status: resp.status,
+    ok: resp.ok,
+    headers: resp.headers,
+    body,
+    async text() {
+      try { return typeof resp.text === "function" ? await resp.text() : ""; }
+      finally { done(); }
+    },
+    async json() {
+      try {
+        if (typeof resp.json === "function") return await resp.json();
+        return JSON.parse(typeof resp.text === "function" ? await resp.text() : "");
+      } finally { done(); }
+    },
+  };
+}
+async function throttledBackendFetch(backend, fetcher) {
+  if (!backend.throttle) return fetcher();
+  const cfg = throttleConfigFromBackend(backend);
+  const st = throttleState(backend.id);
+  let attempt = 0;
+  for (;;) {
+    await acquireThrottleSlot(st, cfg);
+    let released = false;
+    const release = () => { if (!released) { released = true; releaseThrottleSlot(st); } };
+    let resp;
+    try {
+      await throttleRateGate(st, cfg);
+      resp = await fetcher();
+    } catch (e) {
+      release();
+      if (attempt >= cfg.maxRetries) throw e;
+      st.totalRetries++;
+      await sleep(throttleBackoffMs(attempt, cfg, ""));
+      attempt++;
+      continue;
+    }
+
+    if (!isThrottleRetryableStatus(resp.status) || attempt >= cfg.maxRetries) {
+      return wrapThrottleResponse(resp, release);
+    }
+
+    const retryAfter = headerGet(resp.headers, "retry-after");
+    try { if (typeof resp.text === "function") await resp.text(); } catch {}
+    release();
+    st.totalRetries++;
+    await sleep(throttleBackoffMs(attempt, cfg, retryAfter));
+    attempt++;
+  }
+}
+
 function mergeBetas(clientBeta) {
   const set = new Set();  if (clientBeta) String(clientBeta).split(",").forEach((b) => { const t = b.trim(); if (t) set.add(t); });
   REQUIRED_BETAS.forEach((b) => set.add(b));
@@ -502,8 +658,28 @@ function mergeBetas(clientBeta) {
 //                              via anthropicFetch; codexOauth reads ~/.codex/auth.json)
 function normalizeBackend(b) {
   if (!b || typeof b !== "object") b = {};
-  const format = b.format === "openai" ? "openai" : b.format === "openai-responses" ? "openai-responses" : "anthropic";
-  const codexOauth = !!(format === "openai-responses" && b.codexOauth);
+  const id = String(b.id || "");
+  const idLower = id.toLowerCase();
+  let upstream = String(b.upstream || "").replace(/\/+$/, "");
+  let rawFormat = b.format;
+  const modelPatterns = Array.isArray(b.modelPatterns) ? b.modelPatterns.slice() : [];
+  const modelMap = (b.modelMap && typeof b.modelMap === "object" && !Array.isArray(b.modelMap)) ? { ...b.modelMap } : {};
+
+  const looksCodexResponses = upstream === CODEX_RESPONSES_UPSTREAM || b.codexOauth || b.authScheme === "codex-oauth";
+  if (looksCodexResponses) {
+    rawFormat = "openai-responses";
+    upstream = CODEX_RESPONSES_UPSTREAM;
+  }
+
+  const looksGlm = idLower.includes("glm") || modelPatterns.some((p) => String(p).toLowerCase().includes("glm"));
+  const oldGlmDefault = looksGlm && (!upstream || upstream === GLM_OPENAI_COMPAT_UPSTREAM) && (rawFormat == null || rawFormat === "openai");
+  if (oldGlmDefault) {
+    rawFormat = "anthropic";
+    upstream = GLM_ANTHROPIC_UPSTREAM;
+  }
+
+  const format = rawFormat === "openai" ? "openai" : rawFormat === "openai-responses" ? "openai-responses" : "anthropic";
+  const codexOauth = !!(format === "openai-responses" && looksCodexResponses);
   let authScheme = b.authScheme;
   if (!authScheme) {
     if (format === "openai") authScheme = "bearer";
@@ -511,20 +687,72 @@ function normalizeBackend(b) {
     else if (b.oauth) authScheme = "oauth";
     else authScheme = "x-api-key";
   }
+  if (codexOauth) authScheme = "codex-oauth";
+  const throttleCfg = throttleConfigFromBackend(b);
+  const isClaudeNative = format === "anthropic" && (b.oauth || upstream === "https://api.anthropic.com");
+  const defaultGlmThrottle = looksGlm && format === "anthropic" && upstream === GLM_ANTHROPIC_UPSTREAM;
+  const throttleAllowed = !codexOauth && format !== "openai-responses" && !isClaudeNative;
+  const throttle = throttleAllowed && (b.throttle === true || (b.throttle == null && (oldGlmDefault || defaultGlmThrottle)));
   return {
-    id: String(b.id || ""),
-    name: b.name || String(b.id || ""),
-    upstream: String(b.upstream || "").replace(/\/+$/, ""),
+    id,
+    name: b.name || id,
+    upstream,
     format,
     apiKey: b.apiKey || "",
     oauth: !!b.oauth,
     codexOauth,
     authScheme,
-    modelPatterns: Array.isArray(b.modelPatterns) ? b.modelPatterns.slice() : [],
-    modelMap: (b.modelMap && typeof b.modelMap === "object" && !Array.isArray(b.modelMap)) ? { ...b.modelMap } : {},
-    testModel: b.testModel || "",
+    modelPatterns,
+    modelMap,
+    testModel: codexOauth ? CODEX_RESPONSES_MODEL : (b.testModel || ""),
     enabled: b.enabled !== false,
+    throttle,
+    ...throttleCfg,
   };
+}
+
+function assertProfileName(name) {
+  const n = String(name || "").trim();
+  if (!PROFILE_NAME_RE.test(n) || n.includes("/") || n.includes("\\")) throw new Error(`invalid profile name (must match ${PROFILE_NAME_RE})`);
+  return n;
+}
+function normalizeEnvMap(env) {
+  const out = {};
+  if (!env || typeof env !== "object" || Array.isArray(env)) return out;
+  for (const [k, v] of Object.entries(env)) {
+    if (!k || typeof k !== "string") continue;
+    if (v == null) continue;
+    out[k] = String(v);
+  }
+  return out;
+}
+function normalizeRouteOverrides(routes) {
+  if (!Array.isArray(routes)) return undefined;
+  return routes.map((r) => ({
+    pattern: String(r && r.pattern != null ? r.pattern : "*"),
+    backendId: String(r && r.backendId != null ? r.backendId : ""),
+  })).filter((r) => r.backendId);
+}
+function normalizeProfile(p) {
+  if (!p || typeof p !== "object") p = {};
+  const out = {
+    primaryModel: String(p.primaryModel || "").trim(),
+    env: normalizeEnvMap(p.env),
+  };
+  const routes = normalizeRouteOverrides(p.routeOverrides);
+  if (routes) out.routeOverrides = routes;
+  return out;
+}
+function normalizeProfiles(profiles) {
+  const out = {};
+  if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) return out;
+  for (const [name, profile] of Object.entries(profiles)) {
+    try {
+      const n = assertProfileName(name);
+      out[n] = normalizeProfile(profile);
+    } catch {}
+  }
+  return out;
 }
 
 function synthesizeFromEnv() {
@@ -547,21 +775,21 @@ function synthesizeFromEnv() {
   };
 }
 
-function loadConfig() {
+function loadConfig(file = CFG_FILE) {
   try {
-    const cfg = JSON.parse(fs.readFileSync(CFG_FILE, "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
     // normalize + validate shape so downstream code can trust the fields
     cfg.backends = Array.isArray(cfg.backends) ? cfg.backends.map(normalizeBackend) : [];
     if (!cfg.backends.length) return synthesizeFromEnv(); // empty file → synth
     cfg.routes = Array.isArray(cfg.routes) ? cfg.routes : [];
-    cfg.profiles = (cfg.profiles && typeof cfg.profiles === "object") ? cfg.profiles : {};
+    cfg.profiles = normalizeProfiles(cfg.profiles);
     cfg.activeProfile = cfg.activeProfile || null;
     return cfg;
   } catch { return synthesizeFromEnv(); }
 }
-function saveConfig(cfg) {
-  fs.mkdirSync(CFG_DIR, { recursive: true });
-  fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+function saveConfig(cfg, file = CFG_FILE) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicWriteJson(file, cfg);
 }
 
 // glob match, case-insensitive. "*" or "" → match all.
@@ -1021,8 +1249,8 @@ async function* responsesSseEvents(asyncIter) {
 // Map Responses response status → Anthropic stop_reason. completed→end_turn,
 // max_output_tokens (incomplete)→max_tokens, tool_calls present→tool_use.
 function responsesStopReason(state) {
-  if (state.hadToolCalls) return "tool_use";
   if (state.incompleteReason === "max_output_tokens") return "max_tokens";
+  if (state.hadToolCalls) return "tool_use";
   return "end_turn";
 }
 function responsesUsage(u) {
@@ -1129,7 +1357,7 @@ async function* openaiResponsesSseToAnthropicSse(asyncIter, anthropicModel) {
       } else if (item.type === "function_call") {
         if (state.openBlock && state.openBlock.kind === "tool_use" && state.openBlock.itemId === item.id) yield* closeOpen();
       }
-    } else if (t === "response.completed") {
+    } else if (t === "response.completed" || t === "response.incomplete") {
       if (ev.response) {
         if (ev.response.id) state.responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
         state.finalUsage = ev.response.usage || null;
@@ -1209,10 +1437,10 @@ async function openaiResponsesToAnthropicResponse(asyncIter, anthropicModel) {
       } else if (item.type === "message") {
         flushText();
       }
-    } else if (t === "response.completed") {
+    } else if (t === "response.completed" || t === "response.incomplete") {
       if (ev.response) {
         if (ev.response.id) responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
-        status = ev.response.status || "completed";
+        status = ev.response.status || (t === "response.incomplete" ? "incomplete" : "completed");
         usage = ev.response.usage || usage;
         if (ev.response.incomplete_details && ev.response.incomplete_details.reason) incompleteReason = ev.response.incomplete_details.reason;
       }
@@ -1224,7 +1452,7 @@ async function openaiResponsesToAnthropicResponse(asyncIter, anthropicModel) {
   }
   if (failedMsg) throw new Error(String(failedMsg));
   flushText();
-  const stopReason = hadToolCalls ? "tool_use" : (incompleteReason === "max_output_tokens" ? "max_tokens" : "end_turn");
+  const stopReason = incompleteReason === "max_output_tokens" ? "max_tokens" : (hadToolCalls ? "tool_use" : "end_turn");
   return {
     id: responseId,
     type: "message",
@@ -1244,9 +1472,22 @@ async function openaiResponsesToAnthropicResponse(asyncIter, anthropicModel) {
 // fingerprint gate as Anthropic (Node fetch 403s; curl accepted). stream:true is
 // forced upstream; a non-stream Anthropic request buffers + assembles via the
 // collector. count_tokens returns the same chars/4 heuristic as the openai path.
+function openaiResponsesUpstreamForBackend(backend) {
+  if (!backend.codexOauth) return backend.upstream;
+  const configured = String(backend.upstream || "").replace(/\/+$/, "");
+  if (configured && configured !== CODEX_RESPONSES_UPSTREAM) throw new Error("codexOauth upstream must be " + CODEX_RESPONSES_UPSTREAM);
+  return CODEX_RESPONSES_UPSTREAM;
+}
+function openaiResponsesModelForBackend(backend, requestedModel) {
+  if (backend.codexOauth) return CODEX_RESPONSES_MODEL;
+  return (backend.modelMap && backend.modelMap[requestedModel]) || requestedModel;
+}
 async function openaiResponsesTranslate(req, res, backend, body) {
   if (!body || !body.model) return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
-  const model = (backend.modelMap && backend.modelMap[body.model]) || body.model;
+  let upstream;
+  try { upstream = openaiResponsesUpstreamForBackend(backend); }
+  catch (e) { return sendJson(res, 500, { error: { type: "configuration_error", message: String(e.message || e) } }); }
+  const model = openaiResponsesModelForBackend(backend, body.model);
 
   if (req.url.startsWith("/v1/messages/count_tokens")) {
     return sendJson(res, 200, openaiCountTokensResponse(body));
@@ -1284,7 +1525,7 @@ async function openaiResponsesTranslate(req, res, backend, body) {
 
   let up;
   try {
-    up = await anthropicFetch(backend.upstream, { method: "POST", headers, body: JSON.stringify(rBody) });
+    up = await anthropicFetch(upstream, { method: "POST", headers, body: JSON.stringify(rBody) });
   } catch (e) {
     return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
   }
@@ -1331,7 +1572,7 @@ async function openaiTranslate(req, res, backend, body) {
 
   let up;
   try {
-    up = await fetch(url, { method: "POST", headers, body: JSON.stringify(oaiBody) });
+    up = await throttledBackendFetch(backend, () => fetch(url, { method: "POST", headers, body: JSON.stringify(oaiBody) }));
   } catch (e) {
     return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
   }
@@ -1377,7 +1618,7 @@ async function anthropicPassthrough(req, res, backend, body) {
   }
   const doFetch = (hdrs) => anthropicFetch(url, { method: req.method, headers: hdrs, body: sendBody && sendBody.length ? sendBody : undefined });
   let up;
-  try { up = await doFetch(headers); }
+  try { up = await throttledBackendFetch(backend, () => doFetch(headers)); }
   catch (e) { return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } }); }
   // token rejected mid-flight → force one refresh + retry (oauth only)
   if (up.status === 401 && backend.authScheme === "oauth") {
@@ -1433,37 +1674,55 @@ function sortKeys(o) {
   if (o && typeof o === "object") return Object.keys(o).sort().reduce((a, k) => { a[k] = sortKeys(o[k]); return a; }, {});
   return o;
 }
-function atomicWriteJson(file, obj) {
-  const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(sortKeys(obj), null, 2) + "\n", { mode: 0o600 });
+function atomicWriteFile(file, data, mode = 0o600) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  fs.writeFileSync(tmp, data, { mode });
   fs.renameSync(tmp, file);
+}
+function atomicWriteJson(file, obj) {
+  atomicWriteFile(file, JSON.stringify(sortKeys(obj), null, 2) + "\n", 0o600);
 }
 function detectOsEnvConflicts() {
   const risky = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
   return risky.filter((k) => process.env[k] && process.env[k] !== DUMMY_KEY);
 }
+function deepMerge(target, source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) target = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) target[k] = deepMerge(target[k], v);
+    else target[k] = v;
+  }
+  return target;
+}
 
 function ccSettingsPath() {
   return fs.existsSync(CC_SETTINGS_LEGACY) ? CC_SETTINGS_LEGACY : CC_SETTINGS;
 }
-function applyProfile(name) {
-  const cfg = loadConfig();
+function applyProfile(name, opts = {}) {
+  const cfg = opts.cfg || loadConfig(opts.cfgFile || CFG_FILE);
   const profile = cfg.profiles && cfg.profiles[name];
   if (!profile) throw new Error(`unknown profile: ${name}`);
-  const file = ccSettingsPath();
+  if (!profile.primaryModel) throw new Error(`profile ${name} missing primaryModel`);
+  const file = opts.settingsFile || ccSettingsPath();
+  const backupFile = opts.backupFile || CC_BACKUP;
+  const port = opts.port || boundPort;
 
   // 1. back up the ORIGINAL (first time only) — crash-safe like CC-Switch
-  if (!fs.existsSync(CC_BACKUP) && fs.existsSync(file)) {
-    fs.mkdirSync(CFG_DIR, { recursive: true });
-    fs.writeFileSync(CC_BACKUP, fs.readFileSync(file, "utf8"), { mode: 0o600 });
+  if (!fs.existsSync(backupFile) && fs.existsSync(file)) {
+    atomicWriteFile(backupFile, fs.readFileSync(file, "utf8"), 0o600);
   }
 
   // 2. deep-merge: only set env.ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY + ANTHROPIC_MODEL; preserve everything else
   const cur = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8") || "{}") : {};
-  cur.env = cur.env && typeof cur.env === "object" ? cur.env : {};
-  cur.env.ANTHROPIC_BASE_URL = `http://${HOST}:${boundPort}`;
-  cur.env.ANTHROPIC_API_KEY = DUMMY_KEY;                        // non-empty dummy; router ignores it
-  if (profile.primaryModel) cur.env.ANTHROPIC_MODEL = profile.primaryModel;
+  const env = {
+    ANTHROPIC_BASE_URL: `http://${HOST}:${port}`,
+    ANTHROPIC_API_KEY: DUMMY_KEY,
+    ANTHROPIC_MODEL: profile.primaryModel,
+    ...normalizeEnvMap(profile.env),
+  };
+  deepMerge(cur, { env });
   // NOTE: we do NOT scrub ANTHROPIC_DEFAULT_*_MODEL — we WANT Claude Code to send our route names.
 
   // 3. atomic write (temp + rename), keys sorted — matches CC-Switch atomic_write
@@ -1472,15 +1731,16 @@ function applyProfile(name) {
   // 4. persist active profile (+ optional route overrides)
   cfg.activeProfile = name;
   if (Array.isArray(profile.routeOverrides)) cfg.routes = profile.routeOverrides;
-  saveConfig(cfg);
+  saveConfig(cfg, opts.cfgFile || CFG_FILE);
 
   return { writtenPath: file, env: cur.env, conflicts: detectOsEnvConflicts() };
 }
-function restoreProfile() {
-  const file = ccSettingsPath();
-  if (!fs.existsSync(CC_BACKUP)) throw new Error("no backup to restore");
-  fs.copyFileSync(CC_BACKUP, file);                              // restore original
-  const cfg = loadConfig(); cfg.activeProfile = null; saveConfig(cfg);
+function restoreProfile(opts = {}) {
+  const file = opts.settingsFile || ccSettingsPath();
+  const backupFile = opts.backupFile || CC_BACKUP;
+  if (!fs.existsSync(backupFile)) throw new Error("no backup to restore");
+  atomicWriteFile(file, fs.readFileSync(backupFile, "utf8"), 0o600);
+  const cfg = loadConfig(opts.cfgFile || CFG_FILE); cfg.activeProfile = null; saveConfig(cfg, opts.cfgFile || CFG_FILE);
   return { restoredPath: file };
 }
 
@@ -1493,8 +1753,11 @@ function restoreProfile() {
 // anthropic path → anthropicFetch (curl → nodeProxyFetch) so the oauth subscription
 //   TLS gate is bypassed (matches the iron rule: anthropicFetch for ALL Anthropic-bound calls).
 async function testBackend(b) {
-  const model = b.testModel || (b.modelPatterns && b.modelPatterns.find((p) => p && p !== "*")) || "";
+  const model = b.codexOauth ? CODEX_RESPONSES_MODEL : (b.testModel || (b.modelPatterns && b.modelPatterns.find((p) => p && p !== "*")) || "");
   if (b.format === "openai-responses") {
+    let upstream;
+    try { upstream = openaiResponsesUpstreamForBackend(b); }
+    catch (e) { return { ok: false, latencyMs: 0, model, error: String(e.message || e) }; }
     let bearer, extraHeaders = {};
     if (b.codexOauth) {
       const creds = loadCodexCreds();
@@ -1505,7 +1768,7 @@ async function testBackend(b) {
       if (!b.apiKey) return { ok: false, latencyMs: 0, model, error: "missing API key" };
       bearer = b.apiKey;
     }
-    const r = await anthropicFetch(b.upstream, {
+    const r = await anthropicFetch(upstream, {
       method: "POST",
       headers: { "content-type": "application/json", "authorization": `Bearer ${bearer}`, "accept": "text/event-stream", ...extraHeaders },
       body: JSON.stringify({ model, store: false, stream: true, input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }] }),
@@ -1542,10 +1805,10 @@ async function testBackend(b) {
     return { ok: true, latencyMs: 0, model, sample: sample || "(stream ok, no text delta)" };
   }
   if (b.format === "openai") {
-    const r = await fetch(b.upstream + "/chat/completions", {
+    const r = await throttledBackendFetch(b, () => fetch(b.upstream + "/chat/completions", {
       method: "POST", headers: { "content-type": "application/json", "authorization": `Bearer ${b.apiKey}` },
       body: JSON.stringify({ model, messages: [{ role: "user", content: "ping" }], max_completion_tokens: 1, stream: false }),
-    });
+    }));
     if (!r.ok) return { ok: false, latencyMs: 0, model, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
     const j = await r.json();
     const sample = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
@@ -1561,10 +1824,11 @@ async function testBackend(b) {
   } else {
     headers["x-api-key"] = b.apiKey;
   }
-  const r = await anthropicFetch(b.upstream + "/v1/messages", {
+  const r = await throttledBackendFetch(b, () => anthropicFetch(b.upstream + "/v1/messages", {
     method: "POST", headers,
     body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }),
-  });
+  }));
+  if (r.status === 429 && b.authScheme === "oauth") return { ok: true, latencyMs: 0, model, sample: "(429 rate-limited - auth passed)" };
   if (!r.ok) return { ok: false, latencyMs: 0, model, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
   const j = await r.json();
   const sample = j.content && j.content[0] && j.content[0].text;
@@ -1634,6 +1898,7 @@ function apiState() {
     routes: cfg.routes,
     profiles: cfg.profiles || {},
     activeProfile: cfg.activeProfile || null,
+    throttleStats: throttleStatsForConfig(cfg),
     osEnvConflicts: detectOsEnvConflicts(),
   };
 }
@@ -1709,6 +1974,56 @@ async function apiReorderRoutes(req) {
   saveConfig(cfg);
   return cfg.routes;
 }
+function validateProfileForConfig(profile, cfg) {
+  if (!profile.primaryModel) throw new Error("profile primaryModel is required");
+  const backendIds = new Set((cfg.backends || []).map((b) => b.id));
+  for (const r of profile.routeOverrides || []) {
+    if (!backendIds.has(r.backendId)) throw new Error(`unknown route override backendId: ${r.backendId}`);
+  }
+}
+function createProfileInConfig(cfg, body) {
+  const name = assertProfileName(body.name);
+  if (cfg.profiles[name]) throw new Error(`profile already exists: ${name}`);
+  const profile = normalizeProfile(body);
+  validateProfileForConfig(profile, cfg);
+  cfg.profiles[name] = profile;
+  return name;
+}
+function updateProfileInConfig(cfg, name, patch) {
+  name = assertProfileName(name);
+  if (!cfg.profiles[name]) throw new Error(`profile not found: ${name}`);
+  const profile = normalizeProfile({ ...cfg.profiles[name], ...patch });
+  validateProfileForConfig(profile, cfg);
+  cfg.profiles[name] = profile;
+  return name;
+}
+function deleteProfileInConfig(cfg, name) {
+  name = assertProfileName(name);
+  if (!cfg.profiles[name]) throw new Error(`profile not found: ${name}`);
+  delete cfg.profiles[name];
+  if (cfg.activeProfile === name) cfg.activeProfile = null;
+  return name;
+}
+async function apiCreateProfile(req) {
+  const body = await readJson(req);
+  const cfg = loadConfig();
+  createProfileInConfig(cfg, body);
+  saveConfig(cfg);
+  return { profiles: cfg.profiles, activeProfile: cfg.activeProfile || null };
+}
+async function apiUpdateProfile(req, name) {
+  const patch = await readJson(req);
+  const cfg = loadConfig();
+  updateProfileInConfig(cfg, name, patch);
+  saveConfig(cfg);
+  return { profiles: cfg.profiles, activeProfile: cfg.activeProfile || null };
+}
+async function apiDeleteProfile(name) {
+  const cfg = loadConfig();
+  deleteProfileInConfig(cfg, name);
+  saveConfig(cfg);
+  return { profiles: cfg.profiles, activeProfile: cfg.activeProfile || null };
+}
 
 async function apiRouter(req, res, url) {
   const method = req.method;
@@ -1747,11 +2062,20 @@ async function apiRouter(req, res, url) {
   }
 
   if (head === "profiles") {
-    if (seg.length === 2 && method === "GET") {
-      const c = loadConfig();
-      return sendJson(res, 200, { profiles: c.profiles || {}, activeProfile: c.activeProfile || null });
+    if (seg.length === 2) {
+      if (method === "GET") {
+        const c = loadConfig();
+        return sendJson(res, 200, { profiles: c.profiles || {}, activeProfile: c.activeProfile || null });
+      }
+      if (method === "POST") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiCreateProfile(req)); }
+      return sendJson(res, 405, { error: { type: "method_not_allowed" } });
     }
     if (seg.length === 3 && method === "POST" && seg[2] === "restore") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await restoreProfile()); }
+    if (seg.length === 3) {
+      if (method === "PUT") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiUpdateProfile(req, seg[2])); }
+      if (method === "DELETE") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiDeleteProfile(seg[2])); }
+      return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+    }
     if (seg.length === 4 && method === "POST" && seg[3] === "apply") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await applyProfile(seg[2])); }
   }
 

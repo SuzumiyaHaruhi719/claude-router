@@ -148,6 +148,13 @@
   <div id="conflictBanner" class="banner" hidden></div>
   <p class="muted" style="margin-top:10px">Applying writes <code>~/.claude/settings.json</code> (deep-merge, backup first). Claude Code picks it up on its <b>next session</b>.</p>
   <div class="preview" id="profilePreview" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:10px;gap:8px">
+    <input type="text" id="profileName" placeholder="profile name" style="max-width:190px">
+    <input type="text" id="profilePrimaryModel" placeholder="primary model e.g. glm-5.2" style="flex:1">
+    <button class="small" id="saveProfileBtn">Save profile</button>
+    <button class="small danger" id="deleteProfileBtn">Delete selected</button>
+  </div>
+  <textarea id="profileEnv" rows="3" placeholder="optional env overrides, one per line: KEY=value" style="margin-top:8px;width:100%;box-sizing:border-box"></textarea>
 </section>
 
 <!-- backend add/edit modal -->
@@ -177,6 +184,17 @@
     <label class="field"><span>Model patterns (comma-separated globs)</span><input type="text" id="f_modelPatterns" placeholder="gpt-5.5, gpt-5*"></label>
     <label class="field"><span>Model map (one per line: sentModel=upstreamModel)</span><textarea id="f_modelMap" rows="2" placeholder="opus=claude-opus-4-8"></textarea></label>
     <label class="field"><span>Test model</span><input type="text" id="f_testModel" placeholder="gpt-5.5 (used by Test / --checkbackends)"></label>
+    <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+      <input type="checkbox" id="f_throttle" style="width:auto">
+      <span>Throttle/retry this backend (for DashScope/GLM only)</span>
+    </label>
+    <div class="row" id="f_throttleFields" style="gap:8px">
+      <label class="field"><span>Concurrency</span><input type="number" id="f_maxConcurrency" min="1" max="50"></label>
+      <label class="field"><span>Retries</span><input type="number" id="f_maxRetries" min="0" max="6"></label>
+      <label class="field"><span>Base backoff ms</span><input type="number" id="f_baseBackoffMs" min="0"></label>
+      <label class="field"><span>Max backoff ms</span><input type="number" id="f_maxBackoffMs" min="0"></label>
+      <label class="field"><span>Min interval ms</span><input type="number" id="f_minIntervalMs" min="0"></label>
+    </div>
     <p class="hint" id="codexHint" hidden>Codex CLI uses <code>/v1/responses</code>; this router uses <code>/v1/chat/completions</code> with an <code>sk-</code> key — same host (api.openai.com/v1), same model name. Not Responses-API parity.</p>
     <div class="row" style="margin-top:16px;justify-content:flex-end;gap:8px">
       <button id="modalCancel">Cancel</button>
@@ -189,6 +207,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const DUMMY_KEY = "claude-router";
+const GLM_NATIVE_UPSTREAM = "https://dashscope.aliyuncs.com/apps/anthropic";
+const THROTTLE_DEFAULTS = {maxConcurrency:5,maxRetries:3,baseBackoffMs:800,maxBackoffMs:10000,minIntervalMs:350};
 let STATE = null;
 
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
@@ -449,6 +469,7 @@ $("modalSave").addEventListener("click", async ()=>{
 });
 
 // init
+$("codexHint").innerHTML = 'Codex OAuth is pinned to <code>https://chatgpt.com/backend-api/codex/responses</code> and sends upstream model <code>gpt-5.5</code>.';
 loadState().catch(err=>{
   document.body.insertAdjacentHTML("afterbegin", `<div class="banner">Failed to load /api/state: ${esc(err.message)} — is claude-router running on this port?</div>`);
 });

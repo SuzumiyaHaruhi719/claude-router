@@ -22,6 +22,8 @@
 
 **Iron rule:** the Anthropic-native path (`format:"anthropic"` backends) is byte-for-byte passthrough — the existing `headersOAuth`/`headersKey`/`streamUpstream` logic is reused unchanged. Translation only runs on `format:"openai"` backends. This keeps subscription OAuth and key passthrough provably non-regressed.
 
+**CRITICAL — curl-based upstream (do NOT regress):** Anthropic's `/v1/messages` + `platform.claude.com/v1/oauth/token` gate on the HTTP client's TLS fingerprint — Node `fetch` (undici) AND Node `https` both return `403 "Request not allowed"` with a valid subscription token + full official-client headers; `curl` is accepted (`429` = auth passed). This is verified (commit a12c337). The current `server.js` therefore routes ALL Anthropic-bound HTTP through `curlFetch` (a fetch-compatible wrapper around `curl -s -i -N --no-buffer` via `child_process`, with `100 Continue` + proxy `CONNECT` preamble skipping). `anthropicFetch = (url,opts) => HAVE_CURL ? curlFetch(url,opts) : fetch(url,opts)`. The implementation MUST preserve `curlFetch`/`anthropicFetch` and use `anthropicFetch` (NOT raw `fetch`) for: the OAuth token exchange (`exchangeCode`/`refreshCreds`), the `oauth` authScheme anthropic backend's `/v1/messages` forwarding, AND any `format:"anthropic"` backend's passthrough. `format:"openai"` backends (codex/DashScope/GLM) have NO TLS gate → use plain Node `fetch` there (curl unnecessary). Do not replace `anthropicFetch` with `fetch` anywhere Anthropic-bound, or the 403 returns.
+
 ---
 
 ## 1. Architecture

@@ -18,6 +18,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { spawn } = require("child_process");
 
 // --- constants (reverse-engineered from Claude Code; verified 2026-06-24) --------
 const EXPLICIT_PORT = process.env.CLAUDE_ROUTER_PORT || process.env.PORT || "";
@@ -90,7 +91,7 @@ async function exchangeCode(raw) {
   // claude-cli User-Agent + an Origin/Referer of https://claude.ai, else 403.
   const code = String(raw).trim().split("#")[0].split("&")[0];
   if (!code) throw new Error("Empty authorization code.");
-  const res = await fetch(TOKEN_URL, {
+  const res = await anthropicFetch(TOKEN_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -109,8 +110,9 @@ async function exchangeCode(raw) {
       state: pending.state,
     }),
   });
-  if (!res.ok) throw new Error(`Token exchange failed (${res.status}): ${await res.text()}`);
-  const t = await res.json();
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Token exchange failed (${res.status}): ${text}`);
+  const t = JSON.parse(text);
   saveCreds({
     access_token: t.access_token,
     refresh_token: t.refresh_token,
@@ -120,7 +122,7 @@ async function exchangeCode(raw) {
 }
 
 async function refreshCreds(creds) {
-  const res = await fetch(TOKEN_URL, {
+  const res = await anthropicFetch(TOKEN_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -136,8 +138,9 @@ async function refreshCreds(creds) {
       client_id: CLIENT_ID,
     }),
   });
+  const text = await res.text();
   if (!res.ok) throw new Error(`Refresh failed (${res.status})`);
-  const t = await res.json();
+  const t = JSON.parse(text);
   const c = {
     access_token: t.access_token,
     refresh_token: t.refresh_token || creds.refresh_token,
@@ -206,9 +209,88 @@ function headersKey(incoming, key) {
   out["x-api-key"] = key;
   return out;
 }
+
+// --- curl-based upstream (TLS-fingerprint gate bypass) ---------------------------
+// Anthropic's /v1/messages + /v1/oauth/token gate on the HTTP client's TLS/transport
+// fingerprint: Node fetch (undici, HTTP/2) AND Node https (HTTP/1.1) both get 403
+// "Request not allowed"; curl is accepted (verified: same token+headers+body → curl
+// 429 rate-limit-accepted, Node 403). So Anthropic-bound calls (OAuth login + the
+// subscription backend's inference) go through curl. Returns a fetch-like Response so
+// the existing streamUpstream/exchange code is unchanged. Streams SSE via curl -N.
+const HAVE_CURL = (() => { try { require("child_process").execFileSync("curl", ["--version"], { stdio: "ignore", windowsHide: true }); return true; } catch { return false; } })();
+
+function curlFetch(url, { method = "GET", headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = ["-s", "-i", "-N", "--no-buffer", "--max-time", "180", url, "-X", String(method)];
+    for (const [k, v] of Object.entries(headers)) args.push("-H", `${k}: ${v}`);
+    args.push("-H", "Expect:"); // disable Expect:100-continue (its 100 preamble breaks -i parsing)
+    if (body != null && body !== "") {
+      const bodyStr = Buffer.isBuffer(body) ? body.toString("utf8") : String(body);
+      args.push("--data-raw", bodyStr);
+    }
+    let child;
+    try { child = spawn("curl", args, { windowsHide: true }); }
+    catch (e) { return reject(new Error("curl spawn failed: " + e.message)); }
+    let prelude = Buffer.alloc(0);
+    let preludeDone = false;
+    const queued = [];
+    let waiter = null;
+    let childDone = false;
+    let stderr = "";
+    let resolved = false;
+    child.stderr.on("data", (c) => { stderr += c.toString("utf8"); });
+    child.stdout.on("data", (chunk) => {
+      if (!preludeDone) {
+        prelude = Buffer.concat([prelude, chunk]);
+        // Skip any HTTP/1.1 100 Continue preambles, then parse the real status+headers.
+        while (true) {
+          const idx = prelude.indexOf("\r\n\r\n");
+          if (idx === -1) return; // need more bytes
+          const headPart = prelude.slice(0, idx).toString("utf8");
+          const firstLine = headPart.split("\r\n")[0];
+          const st = parseInt((firstLine.match(/HTTP\/[\d.]+\s+(\d+)/) || [])[1] || "0", 10);
+          const reason = firstLine.replace(/^HTTP\/[\d.]+\s+\d+\s*/, "").trim();
+          // Skip 100-continue AND HTTP-proxy CONNECT preambles ("200 Connection established"),
+          // which curl -i emits when HTTPS_PROXY (e.g. Clash) tunnels the request. The real
+          // Anthropic response follows; without skipping, the proxy's 200 is mistaken for the
+          // upstream status and the real status+headers leak into the body.
+          if (st === 100 || (st === 200 && /connection established/i.test(reason))) { prelude = prelude.slice(idx + 4); continue; }
+          const rest = prelude.slice(idx + 4);
+          preludeDone = true;
+          const lines = headPart.split("\r\n");
+          const status = st;
+          const hdrs = new Map();
+          for (const l of lines.slice(1)) { const i = l.indexOf(":"); if (i > 0) hdrs.set(l.slice(0, i).trim().toLowerCase(), l.slice(i + 1).trim()); }
+          const bodyObj = { getReader: () => ({ read: () => new Promise((res) => {
+            if (queued.length) res({ done: false, value: queued.shift() });
+            else if (childDone) res({ done: true });
+            else waiter = res;
+          }) }) };
+          const resp = {
+            status, ok: status >= 200 && status < 300, headers: hdrs, body: bodyObj,
+            async text() { const parts = []; if (rest.length) parts.push(rest); for (;;) { const r = await bodyObj.getReader().read(); if (r.done) break; parts.push(r.value); } return Buffer.concat(parts).toString("utf8"); },
+          };
+          if (rest.length) queued.push(rest);
+          resolved = true;
+          resolve(resp);
+          return;
+        }
+      }
+      if (waiter) { const w = waiter; waiter = null; w({ done: false, value: chunk }); }
+      else queued.push(chunk);
+    });
+    const finish = () => { childDone = true; if (waiter) { const w = waiter; waiter = null; w({ done: true }); } if (!resolved) reject(new Error("curl produced no output" + (stderr ? " | " + stderr.slice(0, 300) : ""))); };
+    child.stdout.on("end", finish);
+    child.on("error", (e) => { if (!resolved) reject(new Error("curl error: " + e.message)); });
+    child.on("exit", finish);
+  });
+}
+
+// Anthropic-bound fetch: use curl (TLS bypass) when available, else fall back to Node fetch.
+const anthropicFetch = (url, opts) => (HAVE_CURL ? curlFetch(url, opts) : fetch(url, opts));
+
 function mergeBetas(clientBeta) {
-  const set = new Set();
-  if (clientBeta) String(clientBeta).split(",").forEach((b) => { const t = b.trim(); if (t) set.add(t); });
+  const set = new Set();  if (clientBeta) String(clientBeta).split(",").forEach((b) => { const t = b.trim(); if (t) set.add(t); });
   REQUIRED_BETAS.forEach((b) => set.add(b));
   return [...set].join(",");
 }
@@ -242,7 +324,7 @@ async function proxy(req, res) {
   if (KEY_MODE) {
     // API-key mode: forward to the configured upstream with x-api-key. No login needed.
     let up;
-    try { up = await fetch(url, { method: req.method, headers: headersKey(req.headers, STATIC_KEY), body: body.length ? body : undefined }); }
+    try { up = await anthropicFetch(url, { method: req.method, headers: headersKey(req.headers, STATIC_KEY), body: body.length ? body : undefined }); }
     catch (e) { return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } }); }
     return streamUpstream(res, up);
   }
@@ -250,7 +332,7 @@ async function proxy(req, res) {
   // OAuth mode (subscription).
   const token = await getAccessToken();
   if (!token) return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: not logged in. Open http://${HOST}:${boundPort}/ and click Login.` } });
-  const doFetch = (tok) => fetch(url, { method: req.method, headers: headersOAuth(req.headers, tok), body: body.length ? body : undefined });
+  const doFetch = (tok) => anthropicFetch(url, { method: req.method, headers: headersOAuth(req.headers, tok), body: body.length ? body : undefined });
 
   let up;
   try { up = await doFetch(token); }

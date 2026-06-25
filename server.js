@@ -268,7 +268,7 @@ function curlFetch(url, { method = "GET", headers = {}, body } = {}) {
           }) }) };
           const resp = {
             status, ok: status >= 200 && status < 300, headers: hdrs, body: bodyObj,
-            async text() { const parts = []; if (rest.length) parts.push(rest); for (;;) { const r = await bodyObj.getReader().read(); if (r.done) break; parts.push(r.value); } return Buffer.concat(parts).toString("utf8"); },
+            async text() { const parts = []; for (;;) { const r = await bodyObj.getReader().read(); if (r.done) break; parts.push(r.value); } return Buffer.concat(parts).toString("utf8"); },
           };
           if (rest.length) queued.push(rest);
           resolved = true;

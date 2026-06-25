@@ -30,7 +30,15 @@ const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
 const SCOPE = "org:create_api_key user:profile user:inference";
 const REQUIRED_BETAS = ["oauth-2025-04-20", "claude-code-20250219"];
-const UPSTREAM = "https://api.anthropic.com";
+// Upstream + auth mode. Default = Anthropic via subscription OAuth (what the user
+// specced). But Anthropic 403-blocks subscription-OAuth inference (verified
+// 2026-06-25), so a working alternative is "key mode": set CLAUDE_ROUTER_API_KEY
+// (and optionally CLAUDE_ROUTER_UPSTREAM for an Anthropic-compatible endpoint like
+// GLM/z.ai) and the router forwards with x-api-key instead, passing the client's
+// betas through untouched. Key mode is auto-selected when CLAUDE_ROUTER_API_KEY is set.
+const UPSTREAM = (process.env.CLAUDE_ROUTER_UPSTREAM || "https://api.anthropic.com").replace(/\/+$/, "");
+const STATIC_KEY = process.env.CLAUDE_ROUTER_API_KEY || "";
+const KEY_MODE = !!STATIC_KEY;
 const CRED_DIR = path.join(os.homedir(), ".claude-router");
 const CRED_FILE = path.join(CRED_DIR, "creds.json");
 
@@ -133,18 +141,29 @@ async function getAccessToken() {
 }
 
 // --- header helpers --------------------------------------------------------------
-// Build outgoing headers: drop the client's auth, inject the OAuth bearer, and union
-// anthropic-beta so the subscription token is accepted on /v1/messages.
-function rewriteHeaders(incoming, token) {
+// Copy client headers minus the ones we replace / hop-by-hop ones.
+function baseHeaders(incoming, alsoStrip) {
+  const strip = new Set(["host", "content-length", "connection", "accept-encoding", ...alsoStrip]);
   const out = {};
   for (const [k, v] of Object.entries(incoming)) {
-    const lk = k.toLowerCase();
-    if (["host", "x-api-key", "authorization", "anthropic-beta", "content-length", "connection", "accept-encoding"].includes(lk)) continue;
-    out[k] = v;
+    if (!strip.has(k.toLowerCase())) out[k] = v;
   }
+  if (!out["anthropic-version"]) out["anthropic-version"] = "2023-06-01";
+  return out;
+}
+// OAuth mode: drop the client's auth, inject the OAuth bearer, and union anthropic-beta
+// so the subscription token is accepted (when Anthropic allows it).
+function headersOAuth(incoming, token) {
+  const out = baseHeaders(incoming, ["x-api-key", "authorization", "anthropic-beta"]);
   out["authorization"] = `Bearer ${token}`;
   out["anthropic-beta"] = mergeBetas(incoming["anthropic-beta"]);
-  if (!out["anthropic-version"]) out["anthropic-version"] = "2023-06-01";
+  return out;
+}
+// Key mode: forward to the configured upstream with x-api-key; pass the client's
+// betas through untouched (no oauth beta — this is a plain API-key request).
+function headersKey(incoming, key) {
+  const out = baseHeaders(incoming, ["x-api-key", "authorization"]);
+  out["x-api-key"] = key;
   return out;
 }
 function mergeBetas(clientBeta) {
@@ -177,16 +196,21 @@ async function streamUpstream(res, up) {
   res.end();
 }
 async function proxy(req, res) {
-  const token = await getAccessToken();
-  if (!token) return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: not logged in. Open http://${HOST}:${boundPort}/ and click Login.` } });
-
   const body = await readBody(req);
   const url = UPSTREAM + req.url;
-  const doFetch = (tok) => fetch(url, {
-    method: req.method,
-    headers: rewriteHeaders(req.headers, tok),
-    body: body.length ? body : undefined,
-  });
+
+  if (KEY_MODE) {
+    // API-key mode: forward to the configured upstream with x-api-key. No login needed.
+    let up;
+    try { up = await fetch(url, { method: req.method, headers: headersKey(req.headers, STATIC_KEY), body: body.length ? body : undefined }); }
+    catch (e) { return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } }); }
+    return streamUpstream(res, up);
+  }
+
+  // OAuth mode (subscription).
+  const token = await getAccessToken();
+  if (!token) return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: not logged in. Open http://${HOST}:${boundPort}/ and click Login.` } });
+  const doFetch = (tok) => fetch(url, { method: req.method, headers: headersOAuth(req.headers, tok), body: body.length ? body : undefined });
 
   let up;
   try { up = await doFetch(token); }
@@ -214,6 +238,18 @@ function statusLine() {
 function page() {
   const s = statusLine();
   const base = `http://${HOST}:${boundPort}`;
+  const loginCard = `<div class=card><b>登录 / Re-login</b>
+    <ol>
+      <li><a class="btn primary" href="/login" target="_blank" rel=noopener>① Login with Claude</a> — 新标签页打开授权，登录并同意。</li>
+      <li>授权后页面会显示一串 <code>code#state</code>，整段复制。</li>
+      <li>粘贴到这里 → Submit：
+        <form method=post action=/exchange><input name=code placeholder="把 code#state 粘到这里" autocomplete=off><button>② Submit code</button></form>
+      </li>
+    </ol></div>`;
+  const oauthWarn = `<p class=muted style="color:#b3261e;margin-top:10px">⚠ Anthropic 目前对订阅 OAuth 推理返回 403（2026-06-25 实测被拦）。要立即可用：设 <code>CLAUDE_ROUTER_API_KEY</code>（+可选 <code>CLAUDE_ROUTER_UPSTREAM</code> 指向 Anthropic 兼容端点，如 GLM/z.ai）切到 API-key 模式。</p>`;
+  const modeCards = KEY_MODE
+    ? `<div class=card><div class=st style="color:#1a7f37">API-key 模式</div><p class=muted>转发到 <code>${UPSTREAM}</code>，用环境变量里的 x-api-key 鉴权，无需登录。</p></div>`
+    : `<div class=card><div class=st>${s.text}</div>${s.ok ? `<form method=post action=/logout style=margin-top:12px><button>Logout</button></form>` : ""}${oauthWarn}</div>` + loginCard;
   return `<!doctype html><meta charset=utf8><title>claude-router</title>
 <style>
  body{font:15px/1.6 system-ui,Segoe UI,sans-serif;max-width:640px;margin:6vh auto;padding:0 20px;color:#1c1c1c;background:#faf9f7}
@@ -229,24 +265,7 @@ function page() {
 <h1>claude-router</h1>
 <p class=sub>本地把 Claude 订阅当 API 用 · localhost only</p>
 
-<div class=card>
-  <div class=st>${s.text}</div>
-  ${s.ok ? `<form method=post action=/logout style=margin-top:12px><button>Logout</button></form>` : ""}
-</div>
-
-<div class=card>
-  <b>登录 / Re-login</b>
-  <ol>
-    <li><a class="btn primary" href="/login" target="_blank" rel=noopener>① Login with Claude</a> — 新标签页打开授权，登录并同意。</li>
-    <li>授权后页面会显示一串 <code>code#state</code>，整段复制。</li>
-    <li>粘贴到这里 → Submit：
-      <form method=post action=/exchange>
-        <input name=code placeholder="把 code#state 粘到这里" autocomplete=off>
-        <button>② Submit code</button>
-      </form>
-    </li>
-  </ol>
-</div>
+${modeCards}
 
 <div class=card>
   <b>给 Claude Code 用</b>
@@ -309,13 +328,19 @@ function selftest() {
   assert(parts.includes("claude-code-20250219"), "merged betas must include claude-code beta");
   assert(parts.filter((b) => b === "claude-code-20250219").length === 1, "betas must dedupe");
   assert(mergeBetas("").split(",").sort().join(",") === [...REQUIRED_BETAS].sort().join(","), "empty client beta -> just required");
-  // header rewrite: strips x-api-key, sets Bearer, injects oauth beta, keeps others
-  const h = rewriteHeaders({ "x-api-key": "sk-leak", "host": "x", "content-type": "application/json", "anthropic-beta": "claude-code-20250219" }, "TOK");
-  assert(!("x-api-key" in h) && !("host" in h), "must strip x-api-key and host");
-  assert(h["authorization"] === "Bearer TOK", "must set Bearer token");
-  assert(h["anthropic-beta"].split(",").includes("oauth-2025-04-20"), "must inject oauth beta");
-  assert(h["content-type"] === "application/json", "must keep content-type");
-  assert(h["anthropic-version"] === "2023-06-01", "must default anthropic-version");
+  // OAuth header rewrite: strips x-api-key, sets Bearer, injects oauth beta, keeps others
+  const h = headersOAuth({ "x-api-key": "sk-leak", "host": "x", "content-type": "application/json", "anthropic-beta": "claude-code-20250219" }, "TOK");
+  assert(!("x-api-key" in h) && !("host" in h), "oauth: must strip x-api-key and host");
+  assert(h["authorization"] === "Bearer TOK", "oauth: must set Bearer token");
+  assert(h["anthropic-beta"].split(",").includes("oauth-2025-04-20"), "oauth: must inject oauth beta");
+  assert(h["content-type"] === "application/json", "oauth: must keep content-type");
+  assert(h["anthropic-version"] === "2023-06-01", "oauth: must default anthropic-version");
+  // Key-mode header rewrite: sets x-api-key, NO bearer, NO injected oauth beta, betas passthrough
+  const k = headersKey({ "x-api-key": "client-key", "authorization": "Bearer old", "host": "x", "anthropic-beta": "claude-code-20250219" }, "MYKEY");
+  assert(k["x-api-key"] === "MYKEY", "key: must set our x-api-key");
+  assert(!("authorization" in k), "key: must drop client authorization");
+  assert(k["anthropic-beta"] === "claude-code-20250219", "key: must pass client betas through untouched");
+  assert(!k["anthropic-beta"].includes("oauth-2025-04-20"), "key: must NOT inject oauth beta");
   console.log("selftest OK");
 }
 
@@ -335,7 +360,7 @@ function listenWithRetry(port, attemptsLeft) {
   server.listen(port, HOST, () => {
     server.removeListener("error", onError);
     boundPort = port;
-    console.log(`claude-router on http://${HOST}:${port}  (login there; set Claude Code's ANTHROPIC_BASE_URL to it)`);
+    console.log(`claude-router on http://${HOST}:${port}  [${KEY_MODE ? "API-key → " + UPSTREAM : "OAuth subscription (login at that URL)"}]  — point Claude Code's ANTHROPIC_BASE_URL here`);
   });
 }
 

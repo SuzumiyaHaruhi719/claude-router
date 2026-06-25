@@ -53,6 +53,7 @@ const KEY_MODE = !!STATIC_KEY;
 const CFG_DIR   = path.join(os.homedir(), ".claude-router");          // creds + backends config
 const CRED_FILE = path.join(CFG_DIR, "creds.json");                   // existing OAuth tokens
 const CFG_FILE  = path.join(CFG_DIR, "backends.json");                // NEW — multi-backend config
+const CODEX_AUTH_FILE = path.join(os.homedir(), ".codex", "auth.json"); // Codex CLI OAuth token (read-only)
 const CC_SETTINGS        = path.join(os.homedir(), ".claude", "settings.json"); // CC-Switch target
 const CC_SETTINGS_LEGACY = path.join(os.homedir(), ".claude", "claude.json");   // CC-Switch fallback
 const CC_BACKUP  = path.join(CFG_DIR, "settings-backup.json");        // pre-takeover backup
@@ -69,6 +70,30 @@ function saveCreds(c) {
   fs.writeFileSync(CRED_FILE, JSON.stringify(c, null, 2), { mode: 0o600 });
 }
 function clearCreds() { try { fs.unlinkSync(CRED_FILE); } catch {} }
+
+// --- Codex CLI creds (READ-ONLY) ------------------------------------------------
+// The Codex CLI logs into the ChatGPT subscription and stores its OAuth token at
+// ~/.codex/auth.json: {auth_mode:"chatgpt", tokens:{access_token, refresh_token,
+// id_token, account_id}, last_refresh}. We read tokens.access_token ONLY — never
+// refresh it (the Codex CLI refreshes it itself; rotating it here would break the
+// user's Codex CLI). expires_at is decoded best-effort from the JWT `exp` claim so
+// callers can surface staleness; absence just means "unknown".
+function loadCodexCreds() {
+  try {
+    const j = JSON.parse(fs.readFileSync(CODEX_AUTH_FILE, "utf8"));
+    const tok = j && j.tokens && j.tokens.access_token;
+    if (!tok) return null;
+    let expires_at;
+    try {
+      const parts = String(tok).split(".");
+      if (parts.length >= 2) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+        if (payload && typeof payload.exp === "number") expires_at = payload.exp * 1000;
+      }
+    } catch { /* not a JWT or unparseable — leave expires_at undefined */ }
+    return { access_token: tok, expires_at };
+  } catch { return null; }
+}
 
 // --- PKCE ------------------------------------------------------------------------
 function b64url(buf) {
@@ -469,14 +494,20 @@ function mergeBetas(clientBeta) {
 }
 
 // --- config model: ~/.claude-router/backends.json --------------------------------
-// Backend: { id, name, upstream, format, apiKey, oauth, authScheme(derived),
+// Backend: { id, name, upstream, format, apiKey, oauth, codexOauth, authScheme(derived),
 //  modelPatterns, modelMap, testModel, enabled }. authScheme is derived, not stored.
+//  format:"anthropic"        → byte-identical /v1/messages passthrough (OAuth or x-api-key)
+//  format:"openai"           → translate to /v1/chat/completions (plain fetch)
+//  format:"openai-responses" → translate to OpenAI Responses API (chatgpt.com/codex/responses
+//                              via anthropicFetch; codexOauth reads ~/.codex/auth.json)
 function normalizeBackend(b) {
   if (!b || typeof b !== "object") b = {};
-  const format = b.format === "openai" ? "openai" : "anthropic";
+  const format = b.format === "openai" ? "openai" : b.format === "openai-responses" ? "openai-responses" : "anthropic";
+  const codexOauth = !!(format === "openai-responses" && b.codexOauth);
   let authScheme = b.authScheme;
   if (!authScheme) {
     if (format === "openai") authScheme = "bearer";
+    else if (format === "openai-responses") authScheme = codexOauth ? "codex-oauth" : "bearer";
     else if (b.oauth) authScheme = "oauth";
     else authScheme = "x-api-key";
   }
@@ -487,6 +518,7 @@ function normalizeBackend(b) {
     format,
     apiKey: b.apiKey || "",
     oauth: !!b.oauth,
+    codexOauth,
     authScheme,
     modelPatterns: Array.isArray(b.modelPatterns) ? b.modelPatterns.slice() : [],
     modelMap: (b.modelMap && typeof b.modelMap === "object" && !Array.isArray(b.modelMap)) ? { ...b.modelMap } : {},
@@ -879,6 +911,409 @@ function openaiCountTokensResponse(body) {
   return { input_tokens: n };
 }
 
+// --- translation: Anthropic → OpenAI Responses API (pure) -----------------------
+// Targets the ChatGPT/Codex subscription responses endpoint (chatgpt.com/.../codex/
+// responses). The Responses API is stateful & item-based: `input` is a flat array of
+// message items + function_call / function_call_output items; `instructions` holds the
+// system prompt; `store:false` + `stream:true` are REQUIRED by the codex endpoint.
+function anthropicToOpenaiResponsesBody(body) {
+  const input = [];
+
+  // system (string OR text-block array) → instructions (string). Per-message system
+  // roles are also folded into instructions (Responses has no in-input system role).
+  let instructions = "";
+  if (typeof body.system === "string") instructions = body.system;
+  else if (Array.isArray(body.system)) {
+    instructions = body.system.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+  }
+
+  for (const msg of body.messages || []) {
+    if (msg.role === "assistant") {
+      const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
+      const textParts = [];
+      const fcCalls = [];
+      for (const b of blocks) {
+        if (b.type === "text") textParts.push({ type: "output_text", text: b.text });
+        else if (b.type === "tool_use") {
+          // top-level input item (NOT nested in content); arguments is a STRING
+          fcCalls.push({ type: "function_call", call_id: b.id, name: b.name, arguments: JSON.stringify(b.input ?? {}) });
+        }
+        // thinking blocks: dropped (no Responses equivalent)
+      }
+      if (textParts.length) input.push({ role: "assistant", content: textParts });
+      for (const fc of fcCalls) input.push(fc);
+    } else if (msg.role === "user") {
+      const parts = [];          // content parts for a role:"user" message item
+      const fcoOutputs = [];     // each becomes a top-level function_call_output item
+      const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
+      for (const b of blocks) {
+        if (b.type === "tool_result") {
+          fcoOutputs.push({ type: "function_call_output", call_id: b.tool_use_id, output: flattenToolResult(b.content) });
+        } else if (b.type === "text") {
+          parts.push({ type: "input_text", text: b.text });
+        } else if (b.type === "image") {
+          const url = imageUrlFromAnthropic(b.source);
+          if (url) parts.push({ type: "input_image", image_url: url });
+        }
+      }
+      // function_call_output items come right after the assistant function_call, before new user text
+      for (const fco of fcoOutputs) input.push(fco);
+      if (parts.length) input.push({ role: "user", content: parts });
+    } else if (msg.role === "system") {
+      const s = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      instructions = instructions ? (instructions + "\n" + s) : s;
+    }
+  }
+
+  const out = {
+    model: body.model,                          // caller may apply backend.modelMap first
+    input,
+    store: false,                               // REQUIRED by codex/responses (else 400)
+    stream: true,                               // REQUIRED (endpoint rejects non-stream)
+  };
+  if (instructions) out.instructions = instructions;
+
+  if (body.max_tokens != null) out.max_output_tokens = body.max_tokens;
+  if (body.temperature != null) out.temperature = clamp(body.temperature, 0, 2);
+  if (body.top_p != null) out.top_p = body.top_p;
+  // dropped: top_k, thinking, cache_control, stop_sequences (no Responses equivalent)
+  if (Array.isArray(body.tools) && body.tools.length) {
+    // Responses function tools are FLAT: {type:"function", name, description, parameters}
+    out.tools = body.tools.map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description || "",
+      parameters: t.input_schema || { type: "object", properties: {} },
+      ...(t.strict != null ? { strict: t.strict } : {}),
+    }));
+  }
+  if (body.tool_choice) {
+    const tc = body.tool_choice;
+    if (tc.type === "auto") out.tool_choice = "auto";
+    else if (tc.type === "any") out.tool_choice = "required";
+    else if (tc.type === "none") out.tool_choice = "none";
+    else if (tc.type === "tool") out.tool_choice = { type: "function", name: tc.name };
+  }
+  return out;
+}
+
+// Consume raw byte chunks → parsed Responses SSE JSON objects. Responses events are
+// `event: <name>\ndata: <json>\n\n`; each data object carries a `type` field equal to
+// the event name, so we only need the data line. "[DONE]" (never sent by Responses,
+// but harmless) is skipped. Reuses the sseDataLines frame-splitting pattern, adapted
+// to yield every parsed data object (no early [DONE] termination semantics).
+async function* responsesSseEvents(asyncIter) {
+  let buf = "";
+  for await (const raw of asyncIter) {
+    buf += Buffer.from(raw).toString("utf8");
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      const data = dataLine.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try { yield JSON.parse(data); } catch { /* skip malformed */ }
+    }
+  }
+}
+
+// Map Responses response status → Anthropic stop_reason. completed→end_turn,
+// max_output_tokens (incomplete)→max_tokens, tool_calls present→tool_use.
+function responsesStopReason(state) {
+  if (state.hadToolCalls) return "tool_use";
+  if (state.incompleteReason === "max_output_tokens") return "max_tokens";
+  return "end_turn";
+}
+function responsesUsage(u) {
+  const x = u || {};
+  return {
+    input_tokens: x.input_tokens || 0,
+    output_tokens: x.output_tokens || 0,
+    cache_read_input_tokens: (x.input_tokens_details && x.input_tokens_details.cached_tokens) || 0,
+    cache_creation_input_tokens: 0,
+  };
+}
+
+// Stateful transform: Responses SSE events → Anthropic SSE event blocks.
+// Emits message_start once; output_text.delta → text content_block + text_delta;
+// function_call (output_item.added) → tool_use content_block; function_call_arguments.delta
+// → input_json_delta partial_json; function_call_arguments.done / output_item.done →
+// content_block_stop; response.completed → message_delta (stop_reason) + message_stop.
+async function* openaiResponsesSseToAnthropicSse(asyncIter, anthropicModel) {
+  const state = {
+    model: anthropicModel,
+    emittedMessageStart: false,
+    nextBlockIndex: 0,
+    openBlock: null,            // {index, kind:"text"|"tool_use", itemId?, callId?, seenDelta?}
+    itemIdToBlock: new Map(),   // function_call item.id → block index (for arg deltas)
+    responseId: "msg_" + crypto.randomUUID().replace(/-/g, "").slice(0, 24),
+    hadToolCalls: false,
+    finalUsage: null,
+    incompleteReason: null,
+    terminal: false,
+  };
+  function* emitMessageStart() {
+    if (state.emittedMessageStart) return;
+    state.emittedMessageStart = true;
+    yield sseBlock("message_start", {
+      message: {
+        id: state.responseId, type: "message", role: "assistant", content: [],
+        model: state.model, stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 1 }, // real usage arrives in message_delta
+      },
+    });
+  }
+  function* closeOpen() {
+    if (state.openBlock) { yield sseBlock("content_block_stop", { index: state.openBlock.index }); state.openBlock = null; }
+  }
+
+  for await (const ev of responsesSseEvents(asyncIter)) {
+    const t = ev.type;
+    if (t === "response.created" || t === "response.in_progress") {
+      if (ev.response && ev.response.id) state.responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+      yield* emitMessageStart();
+    } else if (t === "response.output_item.added") {
+      yield* emitMessageStart();
+      const item = ev.item || {};
+      if (item.type === "function_call") {
+        yield* closeOpen();
+        const idx = state.nextBlockIndex++;
+        const callId = item.call_id || item.id;
+        if (item.id) state.itemIdToBlock.set(item.id, idx);
+        state.hadToolCalls = true;
+        yield sseBlock("content_block_start", {
+          index: idx,
+          content_block: { type: "tool_use", id: callId, name: item.name, input: {} },
+        });
+        state.openBlock = { index: idx, kind: "tool_use", itemId: item.id, callId, seenDelta: false };
+      }
+      // message / reasoning items: text opens lazily on the first output_text.delta
+    } else if (t === "response.output_text.delta") {
+      yield* emitMessageStart();
+      if (!state.openBlock || state.openBlock.kind !== "text") {
+        yield* closeOpen();
+        const idx = state.nextBlockIndex++;
+        yield sseBlock("content_block_start", { index: idx, content_block: { type: "text", text: "" } });
+        state.openBlock = { index: idx, kind: "text" };
+      }
+      yield sseBlock("content_block_delta", { index: state.openBlock.index, delta: { type: "text_delta", text: ev.delta || "" } });
+    } else if (t === "response.content_part.done") {
+      if (state.openBlock && state.openBlock.kind === "text") yield* closeOpen();
+    } else if (t === "response.function_call_arguments.delta") {
+      yield* emitMessageStart();
+      const itemId = ev.item_id;
+      let idx;
+      if (state.openBlock && state.openBlock.kind === "tool_use" && state.openBlock.itemId === itemId) {
+        idx = state.openBlock.index;
+      } else {
+        idx = state.itemIdToBlock.get(itemId);   // fallback (Responses streams one fc at a time, so openBlock matches)
+        if (idx == null) continue;
+      }
+      yield sseBlock("content_block_delta", { index: idx, delta: { type: "input_json_delta", partial_json: ev.delta || "" } });
+      if (state.openBlock && state.openBlock.kind === "tool_use" && state.openBlock.index === idx) state.openBlock.seenDelta = true;
+    } else if (t === "response.function_call_arguments.done") {
+      const itemId = ev.item_id;
+      if (state.openBlock && state.openBlock.kind === "tool_use" && state.openBlock.itemId === itemId) {
+        // if no deltas streamed the args (e.g. {}), emit the final arguments as one partial so the
+        // block delivers a complete JSON value; otherwise the deltas already accumulated to it.
+        if (!state.openBlock.seenDelta && ev.arguments) {
+          yield sseBlock("content_block_delta", { index: state.openBlock.index, delta: { type: "input_json_delta", partial_json: ev.arguments } });
+        }
+        yield* closeOpen();
+      }
+    } else if (t === "response.output_item.done") {
+      const item = ev.item || {};
+      if (item.type === "message") {
+        if (state.openBlock && state.openBlock.kind === "text") yield* closeOpen();
+      } else if (item.type === "function_call") {
+        if (state.openBlock && state.openBlock.kind === "tool_use" && state.openBlock.itemId === item.id) yield* closeOpen();
+      }
+    } else if (t === "response.completed") {
+      if (ev.response) {
+        if (ev.response.id) state.responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+        state.finalUsage = ev.response.usage || null;
+        if (ev.response.incomplete_details && ev.response.incomplete_details.reason) state.incompleteReason = ev.response.incomplete_details.reason;
+      }
+      yield* closeOpen();
+      yield sseBlock("message_delta", { delta: { stop_reason: responsesStopReason(state), stop_sequence: null }, usage: responsesUsage(state.finalUsage) });
+      yield sseBlock("message_stop", {});
+      state.terminal = true;
+      return;
+    } else if (t === "response.failed" || t === "error") {
+      const msg = (ev.error && (ev.error.message || ev.error.code))
+        || (ev.response && ev.response.error && (ev.response.error.message || ev.response.error.code))
+        || "upstream response failed";
+      yield* closeOpen();
+      yield sseBlock("error", { type: "error", error: { type: "api_error", message: String(msg) } });
+      state.terminal = true;
+      return;
+    }
+  }
+  // safety net: upstream ended without response.completed (no terminal event) — close cleanly.
+  if (!state.terminal) {
+    yield* closeOpen();
+    if (!state.emittedMessageStart) yield* emitMessageStart();
+    yield sseBlock("message_delta", { delta: { stop_reason: responsesStopReason(state), stop_sequence: null }, usage: responsesUsage(state.finalUsage) });
+    yield sseBlock("message_stop", {});
+  }
+}
+
+// Non-stream assembler: the codex/responses endpoint REQUIRES stream:true, so for a
+// non-stream Anthropic request we stream upstream, collect all Responses events, and
+// assemble one Anthropic message response. Mirrors openaiToAnthropicResponse output.
+async function openaiResponsesToAnthropicResponse(asyncIter, anthropicModel) {
+  let responseId = "msg_" + crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+  let textBuf = "", inText = false;
+  const content = [];
+  let pendingTool = null;      // {id, name, args} for the function_call currently streaming
+  let status = "completed", usage = null, hadToolCalls = false, incompleteReason = null, failedMsg = null;
+  const flushText = () => { if (inText) { content.push({ type: "text", text: textBuf }); textBuf = ""; inText = false; } };
+
+  for await (const ev of responsesSseEvents(asyncIter)) {
+    const t = ev.type;
+    if (t === "response.created" || t === "response.in_progress") {
+      if (ev.response && ev.response.id) responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+    } else if (t === "response.output_item.added") {
+      const item = ev.item || {};
+      if (item.type === "function_call") {
+        flushText();
+        pendingTool = { id: item.call_id || item.id, name: item.name, args: "" };
+        hadToolCalls = true;
+      } else if (item.type === "message") {
+        flushText();
+      }
+    } else if (t === "response.output_text.delta") {
+      inText = true; textBuf += ev.delta || "";
+    } else if (t === "response.content_part.done") {
+      flushText();
+    } else if (t === "response.function_call_arguments.delta") {
+      if (pendingTool) pendingTool.args += ev.delta || "";
+    } else if (t === "response.function_call_arguments.done") {
+      if (pendingTool) {
+        const finalArgs = ev.arguments != null ? ev.arguments : pendingTool.args;
+        let input = {};
+        try { input = JSON.parse(finalArgs || "{}"); } catch { input = {}; }
+        content.push({ type: "tool_use", id: pendingTool.id, name: pendingTool.name, input });
+        pendingTool = null;
+      }
+    } else if (t === "response.output_item.done") {
+      const item = ev.item || {};
+      if (item.type === "function_call") {
+        if (pendingTool) {
+          let input = {};
+          try { input = JSON.parse(item.arguments || pendingTool.args || "{}"); } catch { input = {}; }
+          content.push({ type: "tool_use", id: pendingTool.id || item.call_id || item.id, name: pendingTool.name || item.name, input });
+          pendingTool = null;
+        }
+      } else if (item.type === "message") {
+        flushText();
+      }
+    } else if (t === "response.completed") {
+      if (ev.response) {
+        if (ev.response.id) responseId = "msg_" + String(ev.response.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+        status = ev.response.status || "completed";
+        usage = ev.response.usage || usage;
+        if (ev.response.incomplete_details && ev.response.incomplete_details.reason) incompleteReason = ev.response.incomplete_details.reason;
+      }
+    } else if (t === "response.failed" || t === "error") {
+      failedMsg = (ev.error && (ev.error.message || ev.error.code))
+        || (ev.response && ev.response.error && (ev.response.error.message || ev.response.error.code))
+        || "upstream response failed";
+    }
+  }
+  if (failedMsg) throw new Error(String(failedMsg));
+  flushText();
+  const stopReason = hadToolCalls ? "tool_use" : (incompleteReason === "max_output_tokens" ? "max_tokens" : "end_turn");
+  return {
+    id: responseId,
+    type: "message",
+    role: "assistant",
+    model: anthropicModel,
+    content,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: responsesUsage(usage),
+  };
+}
+
+// --- proxy wiring: openai-responses backend (codex/responses via anthropicFetch) -
+// Like openaiTranslate but targets the Responses API. The upstream IS the full
+// responses URL (https://chatgpt.com/backend-api/codex/responses) — NOT +/chat/
+// completions. Uses anthropicFetch (curl) because chatgpt.com has the same TLS-
+// fingerprint gate as Anthropic (Node fetch 403s; curl accepted). stream:true is
+// forced upstream; a non-stream Anthropic request buffers + assembles via the
+// collector. count_tokens returns the same chars/4 heuristic as the openai path.
+async function openaiResponsesTranslate(req, res, backend, body) {
+  if (!body || !body.model) return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
+  const model = (backend.modelMap && backend.modelMap[body.model]) || body.model;
+
+  if (req.url.startsWith("/v1/messages/count_tokens")) {
+    return sendJson(res, 200, openaiCountTokensResponse(body));
+  }
+
+  const isStream = !!body.stream;
+  const rBody = anthropicToOpenaiResponsesBody({ ...body, model });
+  // The chatgpt.com codex endpoint is a constrained Responses subset: it rejects
+  // max_output_tokens ("Unsupported parameter: max_output_tokens" → 400). Strip it
+  // for codexOauth. A bearer openai-responses backend against the standard
+  // api.openai.com/v1/responses keeps max_output_tokens (the Responses API accepts it).
+  if (backend.codexOauth) delete rBody.max_output_tokens;
+
+  let bearer;
+  if (backend.codexOauth) {
+    const creds = loadCodexCreds();
+    if (!creds || !creds.access_token) {
+      return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: codex not logged in — run \`codex login\` first (no ~/.codex/auth.json).` } });
+    }
+    bearer = creds.access_token;
+  } else {
+    if (!backend.apiKey) return sendJson(res, 401, { error: { type: "authentication_error", message: `${backend.id}: missing API key` } });
+    bearer = backend.apiKey;
+  }
+
+  const headers = {
+    "content-type": "application/json",
+    "authorization": `Bearer ${bearer}`,
+    "accept": "text/event-stream",
+  };
+  if (backend.codexOauth) {
+    headers["user-agent"] = "codex/0.142.0";
+    headers["origin"] = "https://chatgpt.com";
+  }
+
+  let up;
+  try {
+    up = await anthropicFetch(backend.upstream, { method: "POST", headers, body: JSON.stringify(rBody) });
+  } catch (e) {
+    return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
+  }
+  if (!up.ok) {
+    const text = await up.text();
+    return sendJson(res, up.status, { error: { type: "api_error", message: `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}` } });
+  }
+
+  const reader = up.body.getReader();
+  const iter = (async function* () { for (;;) { const { done, value } = await reader.read(); if (done) break; yield value; } })();
+
+  if (isStream) {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" });
+    try {
+      for await (const block of openaiResponsesSseToAnthropicSse(iter, body.model)) res.write(block);
+    } catch (e) {
+      res.write(sseBlock("error", { type: "error", error: { type: "api_error", message: String(e) } }));
+    }
+    res.end();
+  } else {
+    try {
+      const anth = await openaiResponsesToAnthropicResponse(iter, body.model);
+      sendJson(res, 200, anth);
+    } catch (e) {
+      sendJson(res, 502, { error: { type: "api_error", message: `${backend.id}: ${String(e)}` } });
+    }
+  }
+}
+
 // --- proxy wiring: openai-format backend (plain fetch — no TLS gate on GLM/codex) -
 async function openaiTranslate(req, res, backend, body) {
   if (!body || !body.model) return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
@@ -988,6 +1423,7 @@ async function proxy(req, res) {
   const backend = resolveBackend(model);
   if (!backend) return sendJson(res, 502, { error: { type: "proxy_error", message: `no backend for model ${model || "<none>"}` } });
   if (backend.format === "openai") return openaiTranslate(req, res, backend, body);
+  if (backend.format === "openai-responses") return openaiResponsesTranslate(req, res, backend, body);
   return anthropicPassthrough(req, res, backend, body);
 }
 
@@ -1050,10 +1486,61 @@ function restoreProfile() {
 
 // --- backend test (live 1-token ping) -------------------------------------------
 // openai path → plain fetch (no TLS gate on GLM/codex).
+// openai-responses path → anthropicFetch (curl) to chatgpt.com (same TLS gate as
+//   Anthropic). 200 OR 429 = ok (429 = auth passed, just rate-limited); 401/403/400
+//   = not ok (auth/path broken). stream:true is required, so we read the SSE and
+//   surface the first output_text.delta as the sample.
 // anthropic path → anthropicFetch (curl → nodeProxyFetch) so the oauth subscription
 //   TLS gate is bypassed (matches the iron rule: anthropicFetch for ALL Anthropic-bound calls).
 async function testBackend(b) {
   const model = b.testModel || (b.modelPatterns && b.modelPatterns.find((p) => p && p !== "*")) || "";
+  if (b.format === "openai-responses") {
+    let bearer, extraHeaders = {};
+    if (b.codexOauth) {
+      const creds = loadCodexCreds();
+      if (!creds || !creds.access_token) return { ok: false, latencyMs: 0, model, error: "codex not logged in (run `codex login`)" };
+      bearer = creds.access_token;
+      extraHeaders = { "user-agent": "codex/0.142.0", "origin": "https://chatgpt.com" };
+    } else {
+      if (!b.apiKey) return { ok: false, latencyMs: 0, model, error: "missing API key" };
+      bearer = b.apiKey;
+    }
+    const r = await anthropicFetch(b.upstream, {
+      method: "POST",
+      headers: { "content-type": "application/json", "authorization": `Bearer ${bearer}`, "accept": "text/event-stream", ...extraHeaders },
+      body: JSON.stringify({ model, store: false, stream: true, input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }] }),
+    });
+    // 429 = auth passed, just rate-limited → path works
+    if (r.status === 429) return { ok: true, latencyMs: 0, model, sample: "(429 rate-limited — auth passed)" };
+    if (r.status === 401 || r.status === 403 || r.status === 400) {
+      return { ok: false, latencyMs: 0, model, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
+    }
+    if (!r.ok) return { ok: false, latencyMs: 0, model, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
+    // 200: drain the (tiny) 1-token stream, extract the first text delta as sample
+    let raw = "";
+    try {
+      const reader = r.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        raw += Buffer.from(value).toString("utf8");
+        if (raw.length > 8192) break; // cap (1-token response is tiny)
+      }
+    } catch (e) { return { ok: true, latencyMs: 0, model, sample: "(stream ok, read error: " + String(e).slice(0, 80) + ")" }; }
+    let sample = "";
+    let buf = raw, idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      const dl = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!dl) continue;
+      const d = dl.slice(5).trim();
+      if (!d || d === "[DONE]") continue;
+      let ev; try { ev = JSON.parse(d); } catch { continue; }
+      if (ev.type === "response.output_text.delta") sample += ev.delta || "";
+      if (ev.type === "response.completed" || ev.type === "response.failed") break;
+    }
+    return { ok: true, latencyMs: 0, model, sample: sample || "(stream ok, no text delta)" };
+  }
   if (b.format === "openai") {
     const r = await fetch(b.upstream + "/chat/completions", {
       method: "POST", headers: { "content-type": "application/json", "authorization": `Bearer ${b.apiKey}` },
@@ -1157,6 +1644,7 @@ async function apiCreateBackend(req) {
   if (cfg.backends.some((x) => x.id === b.id)) throw new Error(`backend id already exists: ${b.id}`);
   const n = normalizeBackend(b);
   if (n.oauth && cfg.backends.some((x) => x.oauth)) throw new Error("only one oauth backend is allowed");
+  if (n.codexOauth && cfg.backends.some((x) => x.codexOauth)) throw new Error("only one codex-oauth backend is allowed");
   cfg.backends.push(n);
   saveConfig(cfg);
   return n;
@@ -1171,6 +1659,7 @@ async function apiUpdateBackend(req, id) {
   // PUT with empty/missing apiKey preserves the stored key (no wipe-on-edit)
   if (patch.apiKey == null || patch.apiKey === "") merged.apiKey = cur.apiKey;
   if (merged.oauth) for (const x of cfg.backends) if (x.id !== id && x.oauth) throw new Error("only one oauth backend is allowed");
+  if (merged.codexOauth) for (const x of cfg.backends) if (x.id !== id && x.codexOauth) throw new Error("only one codex-oauth backend is allowed");
   cfg.backends[idx] = merged;
   saveConfig(cfg);
   return merged;
@@ -1428,6 +1917,114 @@ async function selftestMultiBackend() {
   assert(maskKey("") === "", "maskKey empty");
 }
 
+// Codex / Responses-API assertions: request translation, scripted Responses SSE →
+// Anthropic SSE, and the non-stream assembler. (async — for-await over generators)
+async function selftestCodexResponses() {
+  const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1); } };
+
+  // (a) request translation: Anthropic Messages → Responses body
+  const anth = {
+    model: "gpt-5.5", max_tokens: 100, temperature: 0.5, top_k: 40,
+    system: [{ type: "text", text: "You are helpful." }],
+    messages: [
+      { role: "user", content: "Weather in SF?" },
+      { role: "assistant", content: [{ type: "text", text: "Let me check." }, { type: "tool_use", id: "toolu_A", name: "get_weather", input: { location: "SF" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_A", content: "62F" }] },
+    ],
+    tools: [{ name: "get_weather", description: "d", input_schema: { type: "object", properties: { location: { type: "string" } }, required: ["location"] }, strict: true }],
+    tool_choice: { type: "auto" },
+    stop_sequences: ["END"],
+    stream: true,
+  };
+  const r = anthropicToOpenaiResponsesBody(anth);
+  assert(r.store === false, "resp: store:false always");
+  assert(r.stream === true, "resp: stream:true always");
+  assert(r.instructions === "You are helpful.", "resp: system → instructions");
+  assert(r.max_output_tokens === 100, "resp: max_tokens → max_output_tokens");
+  assert(r.temperature === 0.5, "resp: temperature passthrough");
+  assert(r.top_k === undefined, "resp: top_k dropped");
+  assert(r.stop === undefined && r.stop_sequences === undefined, "resp: stop_sequences dropped");
+  // user text → input_text
+  const userMsg = r.input.find((it) => it.role === "user" && Array.isArray(it.content));
+  assert(userMsg && userMsg.content[0].type === "input_text" && userMsg.content[0].text === "Weather in SF?", "resp: user text → input_text");
+  // assistant text → output_text
+  const asstMsg = r.input.find((it) => it.role === "assistant");
+  assert(asstMsg && asstMsg.content[0].type === "output_text" && asstMsg.content[0].text === "Let me check.", "resp: assistant text → output_text");
+  // assistant tool_use → top-level function_call with JSON.stringify arguments
+  const fc = r.input.find((it) => it.type === "function_call");
+  assert(fc && fc.call_id === "toolu_A" && fc.name === "get_weather" && fc.arguments === '{"location":"SF"}', "resp: tool_use → function_call (top-level, arguments string)");
+  // user tool_result → function_call_output
+  const fco = r.input.find((it) => it.type === "function_call_output");
+  assert(fco && fco.call_id === "toolu_A" && fco.output === "62F", "resp: tool_result → function_call_output");
+  // tools → flat function shape (NOT nested under .function)
+  assert(r.tools[0].type === "function" && r.tools[0].name === "get_weather" && r.tools[0].parameters.required[0] === "location" && r.tools[0].strict === true, "resp: tools → flat function");
+  assert(r.tool_choice === "auto", "resp: tool_choice auto");
+  // ordering: user msg, assistant msg, function_call, function_call_output
+  assert(r.input[0].role === "user", "resp: input[0] is user msg");
+  assert(r.input[1].role === "assistant", "resp: input[1] is assistant msg");
+  assert(r.input[2].type === "function_call", "resp: input[2] is function_call");
+  assert(r.input[3].type === "function_call_output", "resp: input[3] is function_call_output");
+
+  // (b) scripted Responses SSE → Anthropic SSE
+  const respEvents = [
+    { type: "response.created", response: { id: "resp_1", status: "in_progress" } },
+    { type: "response.output_item.added", output_index: 0, item: { id: "msg_1", type: "message", role: "assistant", content: [] } },
+    { type: "response.content_part.added", item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text", text: "" } },
+    { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "Hel" },
+    { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "lo" },
+    { type: "response.output_text.done", item_id: "msg_1", output_index: 0, content_index: 0, text: "Hello" },
+    { type: "response.content_part.done", item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text", text: "Hello" } },
+    { type: "response.output_item.done", output_index: 0, item: { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] } },
+    { type: "response.output_item.added", output_index: 1, item: { id: "fc_1", type: "function_call", name: "get_weather", arguments: "", call_id: "call_1" } },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 1, delta: '{"locat' },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 1, delta: 'ion":"SF"}' },
+    { type: "response.function_call_arguments.done", item_id: "fc_1", output_index: 1, arguments: '{"location":"SF"}' },
+    { type: "response.output_item.done", output_index: 1, item: { id: "fc_1", type: "function_call", name: "get_weather", arguments: '{"location":"SF"}', call_id: "call_1" } },
+    { type: "response.completed", response: { id: "resp_1", status: "completed", usage: { input_tokens: 25, output_tokens: 7, input_tokens_details: { cached_tokens: 3 } } } },
+  ];
+  const sse = respEvents.map((ev) => `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`).join("");
+  const events = [];
+  for await (const block of openaiResponsesSseToAnthropicSse((async function* () { yield Buffer.from(sse); })(), "gpt-5.5")) {
+    const m = block.trim().match(/^event: (\w+)\ndata: (\{.*\})$/s);
+    if (m) events.push({ event: m[1], data: JSON.parse(m[2]) });
+  }
+  const seq = events.map((e) => e.event);
+  assert(seq[0] === "message_start", "resp SSE: message_start first");
+  assert(seq[seq.length - 1] === "message_stop", "resp SSE: message_stop last");
+  // text deltas
+  const textDeltas = events.filter((e) => e.event === "content_block_delta" && e.data.delta && e.data.delta.type === "text_delta");
+  assert(textDeltas.map((d) => d.data.delta.text).join("") === "Hello", "resp SSE: output_text.delta → text_delta accumulates to Hello");
+  // tool_use block start carries call_id + name
+  const tuStart = events.find((e) => e.event === "content_block_start" && e.data.content_block && e.data.content_block.type === "tool_use");
+  assert(tuStart && tuStart.data.content_block.id === "call_1" && tuStart.data.content_block.name === "get_weather", "resp SSE: function_call → tool_use block start (id+name)");
+  // input_json_delta partials
+  const jsonDeltas = events.filter((e) => e.event === "content_block_delta" && e.data.delta && e.data.delta.type === "input_json_delta");
+  assert(jsonDeltas.length === 2 && jsonDeltas.map((d) => d.data.delta.partial_json).join("") === '{"location":"SF"}', "resp SSE: function_call_arguments.delta → input_json_delta accumulates");
+  // message_delta stop_reason + usage
+  const md = events.find((e) => e.event === "message_delta");
+  assert(md && md.data.delta.stop_reason === "tool_use", "resp SSE: response.completed → stop_reason tool_use (hadToolCalls)");
+  assert(md.data.usage && md.data.usage.input_tokens === 25 && md.data.usage.output_tokens === 7 && md.data.usage.cache_read_input_tokens === 3, "resp SSE: usage mapped");
+  // both blocks closed
+  assert(seq.filter((e) => e === "content_block_stop").length >= 2, "resp SSE: both content blocks closed");
+
+  // (c) non-stream assembler (same SSE → one Anthropic message)
+  const ns = await openaiResponsesToAnthropicResponse((async function* () { yield Buffer.from(sse); })(), "gpt-5.5");
+  assert(ns.type === "message" && ns.role === "assistant", "resp non-stream: type/role");
+  assert(ns.content.find((b) => b.type === "text" && b.text === "Hello"), "resp non-stream: text block");
+  assert(ns.content.find((b) => b.type === "tool_use" && b.id === "call_1" && b.input && b.input.location === "SF"), "resp non-stream: tool_use block with parsed input");
+  assert(ns.stop_reason === "tool_use", "resp non-stream: stop_reason tool_use");
+  assert(ns.usage.input_tokens === 25 && ns.usage.output_tokens === 7 && ns.usage.cache_read_input_tokens === 3, "resp non-stream: usage mapped");
+
+  // (d) end_turn stop_reason when there are no tool calls
+  const noToolSse = [
+    { type: "response.created", response: { id: "resp_2", status: "in_progress" } },
+    { type: "response.output_text.delta", item_id: "m", output_index: 0, content_index: 0, delta: "hi" },
+    { type: "response.completed", response: { id: "resp_2", status: "completed", usage: { input_tokens: 5, output_tokens: 1 } } },
+  ].map((ev) => `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`).join("");
+  const ns2 = await openaiResponsesToAnthropicResponse((async function* () { yield Buffer.from(noToolSse); })(), "gpt-5.5");
+  assert(ns2.stop_reason === "end_turn" && ns2.content[0].text === "hi", "resp non-stream: completed (no tools) → end_turn");
+}
+
 // --- --checkbackends (live network pings, no listener) --------------------------
 async function checkBackends() {
   const cfg = loadConfig();
@@ -1472,12 +2069,14 @@ function listenWithRetry(port, attemptsLeft) {
 }
 
 if (process.argv.includes("--selftest")) {
-  // selftest() is sync; selftestMultiBackend() is async (for-await over the SSE
-  // generator) — drive both from an async IIFE so the result ordering is deterministic.
+  // selftest() is sync; selftestMultiBackend()/selftestCodexResponses() are async
+  // (for-await over the SSE generators) — drive all three from an async IIFE so the
+  // result ordering is deterministic.
   (async () => {
     selftest();
     await selftestMultiBackend();
-    console.log("selftest OK (multi-backend)");
+    await selftestCodexResponses();
+    console.log("selftest OK (multi-backend + codex/responses)");
   })();
 } else if (process.argv.includes("--checkbackends")) {
   checkBackends();

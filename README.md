@@ -5,13 +5,14 @@ Local proxy that lets **Claude Code** (which only speaks the Anthropic `/v1/mess
 ```
 Claude Code ──POST /v1/messages──▶ claude-router (127.0.0.1:8123)
   body.model routes to a backend:
-    "gpt-5.5" → codex/OpenAI   (format: openai     → translate request/response/SSE)
-    "opus"    → Anthropic      (format: anthropic  → byte-identical passthrough)
-    "glm-5.2" → DashScope      (format: openai     → translate)
+    "gpt-5.5" → Codex (ChatGPT sub) (format: openai-responses → translate to /v1/responses)
+    "opus"    → Anthropic           (format: anthropic        → byte-identical passthrough)
+    "glm-5.2" → DashScope           (format: openai           → translate to /v1/chat/completions)
 ```
 
 - **`format:"anthropic"` backends** are byte-for-byte passthrough — they reuse the existing OAuth-subscription and API-key logic unchanged. No translation, no regression.
 - **`format:"openai"` backends** get a full Anthropic↔OpenAI translation: request body (system prompt, tool-use, tool-results, images, stop sequences), non-streaming response, and streaming SSE — including tool-call streaming (`tool_calls[].index` → distinct `tool_use` blocks; `arguments` → `input_json_delta.partial_json`).
+- **`format:"openai-responses"` backends** translate to the OpenAI **Responses API** — the same schema the Codex CLI uses. The built-in `codex` backend points at `https://chatgpt.com/backend-api/codex/responses` and reuses the **Codex CLI login** (`~/.codex/auth.json`, read-only) so Claude Code can drive your **ChatGPT subscription** with no API key. See [Codex (ChatGPT subscription) backend](#codex-chatgpt-subscription-backend) below.
 
 ## Run
 
@@ -30,8 +31,8 @@ Backends live in `~/.claude-router/backends.json` (mode 0600), created by the UI
 ```jsonc
 {
   "backends": [
-    { "id":"codex",  "name":"OpenAI Codex (gpt-5.5)", "upstream":"https://api.openai.com/v1",
-      "format":"openai", "apiKey":"sk-…", "modelPatterns":["gpt-5.5","gpt-5*"], "testModel":"gpt-5.5", "enabled":true },
+    { "id":"codex",  "name":"Codex (ChatGPT subscription)", "upstream":"https://chatgpt.com/backend-api/codex/responses",
+      "format":"openai-responses", "codexOauth":true, "modelPatterns":["gpt-5.5","gpt-5*"], "testModel":"gpt-5.5", "enabled":true },
     { "id":"claude", "name":"Anthropic Opus (subscription OAuth)", "upstream":"https://api.anthropic.com",
       "format":"anthropic", "oauth":true, "modelPatterns":["opus","claude-*"], "modelMap":{"opus":"claude-opus-4-8"}, "testModel":"claude-opus-4-8", "enabled":true },
     { "id":"glm",    "name":"GLM 5.2 (DashScope)", "upstream":"https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -89,21 +90,40 @@ claude
 
 `ANTHROPIC_API_KEY=claude-router` is a **non-empty dummy**. Claude Code requires *something* there or it pops a login prompt. The router **ignores** the incoming `x-api-key` entirely and authenticates each backend with its own real key from `backends.json` (or the OAuth token from `creds.json`). It is not a secret.
 
-### ⚠ Codex `/chat/completions` caveat
+### Codex (ChatGPT subscription) backend
 
-The `codex` backend is an `openai`-format backend hitting `https://api.openai.com/v1` with an `sk-` API key via `/v1/chat/completions`. The Codex CLI itself uses `/v1/responses` (a different, stateful schema), which is **out of scope for v1**. Same host, same `gpt-5.5` model, but this router speaks Chat Completions, not Responses — so it is not full Codex-CLI parity. Documented in the UI's add-backend tooltip.
+The built-in `codex` backend uses `format:"openai-responses"` to translate Anthropic Messages → the OpenAI **Responses API**, pointing at `https://chatgpt.com/backend-api/codex/responses` — the same endpoint the Codex CLI hits. It reuses your **Codex CLI login**: the router reads `~/.codex/auth.json` (the `tokens.access_token`) **read-only** and never refreshes it (the Codex CLI refreshes it itself; refreshing here could rotate the token and break your Codex CLI). So there is no separate login step — just run `codex login` once in the Codex CLI first.
+
+Config:
+```jsonc
+{ "id":"codex", "name":"Codex (ChatGPT subscription)",
+  "upstream":"https://chatgpt.com/backend-api/codex/responses",
+  "format":"openai-responses", "codexOauth":true,
+  "modelPatterns":["gpt-5.5","gpt-5*"], "testModel":"gpt-5.5", "enabled":true }
+```
+
+Requirements (verified against the live endpoint):
+- **`gpt-5.5` is the only accepted model id** — `gpt-5` / `gpt-5-codex` / `o3` / etc. all return `400 "not supported"`. Route `gpt-5*` here and map other names to `gpt-5.5` via `modelMap` if needed.
+- **`store:false` AND `stream:true` are required** in the request body (else `400`). The router always sets both; for a non-streaming Anthropic request it still streams upstream and buffers/assembles the final message.
+- Headers sent: `Authorization: Bearer <codex token>`, `User-Agent: codex/0.142.0`, `Origin: https://chatgpt.com`, `Accept: text/event-stream`. (No `OpenAI-Beta` needed.)
+- The call goes through **`anthropicFetch` (curl)** — `chatgpt.com` has the same TLS-fingerprint gate as Anthropic (Node `fetch` 403s; curl is accepted). Plain `fetch` is only used for `openai` (chat-completions) backends.
+- At most one `codexOauth` backend is allowed (enforced on save).
+
+`node server.js --checkbackends` reports **OK on `429`** (rate-limited = auth passed = path works) as well as on `200`; `401`/`403`/`400` are failures. (The account is currently 429 rate-limited; 429 is the expected "healthy" result until the limit clears.)
+
+If you have an OpenAI **API key** instead of a subscription, add a separate `format:"openai"` backend hitting `https://api.openai.com/v1` via `/v1/chat/completions` (the older chat-completions translation). That path is **not** Responses-API parity — the UI's add-backend tooltip notes this.
 
 ## Translation layer (Anthropic ↔ OpenAI)
 
-Only `format:"openai"` backends translate; `format:"anthropic"` is passthrough. Mapping highlights:
-- **System prompt** → one leading `role:"system"` message (string or text-block array).
-- **Tool-use (request)** → `tool_calls[].function.arguments` as a **string** (`JSON.stringify`).
-- **Tool results** → one `role:"tool"` message per `tool_result` block, `tool_call_id` matched, emitted before same-turn user text.
-- **`max_tokens` → `max_completion_tokens`**; `top_k` dropped; `stop_sequences` → `stop`.
+`format:"openai"` and `format:"openai-responses"` backends translate; `format:"anthropic"` is passthrough. Mapping highlights:
+- **System prompt** → `openai`: one leading `role:"system"` message · `openai-responses`: top-level `instructions` (string).
+- **Tool-use (request)** → `openai`: `tool_calls[].function.arguments` as a **string** (`JSON.stringify`) · `openai-responses`: a top-level `function_call` input item `{type:"function_call", call_id, name, arguments}`.
+- **Tool results** → `openai`: one `role:"tool"` message per `tool_result` · `openai-responses`: a top-level `function_call_output` item `{type:"function_call_output", call_id, output}`.
+- **`max_tokens` → `max_completion_tokens`** (openai) / **`max_output_tokens`** (openai-responses); `top_k` dropped; `stop_sequences` → `stop` (openai only, dropped on responses).
 - **`thinking` / `output_config` / `cache_control`** dropped (Anthropic-specific; no OpenAI equivalent — so prompt-cache translation across formats is not supported in v1).
-- **`finish_reason` → `stop_reason`**: `stop→end_turn`, `length→max_tokens`, `tool_calls→tool_use`, `content_filter→refusal`.
-- **Streaming**: emits `message_start` once, one `content_block_start`/`stop` per block, `content_block_delta` (text or `input_json_delta`), `message_delta` with mapped `stop_reason`, `message_stop` last; `stream_options.include_usage` requested so the final usage chunk is mapped.
-- **`/v1/messages/count_tokens`** on an openai backend returns a heuristic (`chars/4`) — OpenAI has no count endpoint.
+- **`finish_reason`/status → `stop_reason`**: `stop/completed→end_turn`, `length/max_output_tokens→max_tokens`, `tool_calls→tool_use`, `content_filter→refusal`.
+- **Streaming (openai-responses)**: `response.output_text.delta` → `text_delta`; `response.function_call_arguments.delta` → `input_json_delta.partial_json`; `response.output_item.added` (function_call) opens a `tool_use` block carrying `call_id`+`name`; `response.completed` → `message_delta` + `message_stop`. `store:false` + `stream:true` always set.
+- **`/v1/messages/count_tokens`** on an openai/openai-responses backend returns a heuristic (`chars/4`) — neither has a count endpoint.
 
 ## Security
 
@@ -120,9 +140,9 @@ Only `format:"openai"` backends translate; `format:"anthropic"` is passthrough. 
 ```sh
 node server.js --selftest
 ```
-Checks PKCE, the `anthropic-beta` merge, header rewriting, **plus** multi-backend routing, request/response/SSE translation, and `maskKey`. Prints `selftest OK (multi-backend)` on success.
+Checks PKCE, the `anthropic-beta` merge, header rewriting, **plus** multi-backend routing, request/response/SSE translation, `maskKey`, and a codex/Responses-API section (request translation + scripted Responses SSE → Anthropic SSE + non-stream assembler). Prints `selftest OK (multi-backend + codex/responses)` on success.
 
-`node server.js --checkbackends` pings each enabled backend with a 1-token request and prints pass/fail + latency. Exits 0 if all pass, 1 if any fail. (For the OAuth subscription backend this currently returns 429 rate-limit via curl — which confirms the TLS-fingerprint gate is bypassed; see below.)
+`node server.js --checkbackends` pings each enabled backend with a 1-token request and prints pass/fail + latency. Exits 0 if all pass, 1 if any fail. (For the OAuth subscription backend this currently returns 429 rate-limit via curl — which confirms the TLS-fingerprint gate is bypassed; see below. For the `codex` backend, `429` is also reported as OK — auth passed, just rate-limited.)
 
 ## ⚠️ Verified status (2026-06-25) — subscription OAuth is currently BLOCKED for inference
 

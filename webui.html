@@ -38,7 +38,9 @@
   .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.03em}
   .badge.anthropic{background:#efe7f0;color:#6b3a78}
   .badge.openai{background:#e3edf6;color:#2a5d80}
+  .badge.openai-responses{background:#e0efe7;color:#2f6d4a}
   .badge.oauth{background:#fdf0d8;color:#8a6d1a}
+  .badge.codex{background:#eef0e9;color:#4a6d2f}
   .badge.mode{background:var(--chip);color:#555}
   .chip{display:inline-block;font-size:12px;background:var(--chip);padding:2px 8px;border-radius:6px;margin:2px 4px 2px 0}
   .ok{color:var(--ok)} .warn{color:var(--warn)}
@@ -159,13 +161,18 @@
       <select id="f_format">
         <option value="anthropic">anthropic (native /v1/messages passthrough)</option>
         <option value="openai">openai (translate to /v1/chat/completions)</option>
+        <option value="openai-responses">openai-responses (Codex CLI /v1/responses — ChatGPT subscription)</option>
       </select>
     </label>
-    <label class="field"><span>Upstream base URL</span><input type="url" id="f_upstream" placeholder="anthropic: https://api.anthropic.com · openai: https://api.openai.com/v1"></label>
-    <label class="field"><span>API key</span><input type="password" id="f_apiKey" placeholder="sk-… (leave blank on edit to keep stored key)"></label>
+    <label class="field"><span>Upstream base URL</span><input type="url" id="f_upstream" placeholder="anthropic: https://api.anthropic.com · openai: https://api.openai.com/v1 · codex: https://chatgpt.com/backend-api/codex/responses"></label>
+    <label class="field"><span>API key</span><input type="password" id="f_apiKey" placeholder="sk-… (leave blank on edit to keep stored key; blank for Codex OAuth)"></label>
     <label class="field" style="flex-direction:row;align-items:center;gap:8px">
       <input type="checkbox" id="f_oauth" style="width:auto">
       <span>OAuth subscription (anthropic only — uses ~/.claude-router/creds.json; only one allowed)</span>
+    </label>
+    <label class="field" id="f_codexOauthWrap" style="flex-direction:row;align-items:center;gap:8px" hidden>
+      <input type="checkbox" id="f_codexOauth" style="width:auto">
+      <span>Codex OAuth (reads <code>~/.codex/auth.json</code> — run <code>codex login</code> first; only one allowed)</span>
     </label>
     <label class="field"><span>Model patterns (comma-separated globs)</span><input type="text" id="f_modelPatterns" placeholder="gpt-5.5, gpt-5*"></label>
     <label class="field"><span>Model map (one per line: sentModel=upstreamModel)</span><textarea id="f_modelMap" rows="2" placeholder="opus=claude-opus-4-8"></textarea></label>
@@ -197,6 +204,7 @@ async function api(method, path, body){
 
 function fmtChips(arr){return (arr||[]).map(p=>`<span class="chip">${esc(p)}</span>`).join("");}
 function authLabel(b){
+  if(b.codexOauth || b.authScheme==="codex-oauth") return "Codex OAuth";
   if(b.authScheme==="oauth") return "OAuth (subscription)";
   if(b.authScheme==="bearer") return "Bearer (openai)";
   return "x-api-key";
@@ -228,6 +236,7 @@ function renderBackends(){
       <div>
         <span class="badge ${b.format}">${b.format}</span>
         <span class="badge ${b.authScheme==="oauth"?"oauth":""}" ${b.authScheme!=="oauth"?"hidden":""}>oauth</span>
+        <span class="badge ${b.codexOauth?"codex":""}" ${!b.codexOauth?"hidden":""}>codex</span>
       </div>
       <div class="up"><code>${esc(b.upstream)}</code></div>
       <div class="key">key: <code>${esc(b.apiKey||"(none)")}</code> · ${esc(authLabel(b))}</div>
@@ -396,17 +405,20 @@ function openModal(b){
   $("f_apiKey").value = ""; // never prefill the key; blank-on-edit preserves it
   $("f_apiKey").placeholder = editing ? "leave blank to keep stored key" : "sk-…";
   $("f_oauth").checked = editing ? !!b.oauth : false;
+  $("f_codexOauth").checked = editing ? !!b.codexOauth : false;
   $("f_modelPatterns").value = editing ? (b.modelPatterns||[]).join(", ") : "";
   $("f_modelMap").value = editing ? stringifyMap(b.modelMap) : "";
   $("f_testModel").value = editing ? (b.testModel||"") : "";
-  syncCodexHint();
+  syncFormatFields();
   $("backendModal").classList.add("open");
 }
 function closeModal(){$("backendModal").classList.remove("open");}
-function syncCodexHint(){
-  $("codexHint").hidden = $("f_format").value !== "openai";
+function syncFormatFields(){
+  const fmt = $("f_format").value;
+  $("codexHint").hidden = fmt !== "openai";
+  $("f_codexOauthWrap").hidden = fmt !== "openai-responses";
 }
-$("f_format").addEventListener("change", syncCodexHint);
+$("f_format").addEventListener("change", syncFormatFields);
 $("addBackendBtn").addEventListener("click", ()=>openModal(null));
 $("modalCancel").addEventListener("click", closeModal);
 $("backendModal").addEventListener("click",(e)=>{if(e.target.id==="backendModal")closeModal();});
@@ -418,6 +430,7 @@ $("modalSave").addEventListener("click", async ()=>{
     format: $("f_format").value,
     upstream: $("f_upstream").value.trim(),
     oauth: $("f_format").value==="anthropic" && $("f_oauth").checked,
+    codexOauth: $("f_format").value==="openai-responses" && $("f_codexOauth").checked,
     modelPatterns: $("f_modelPatterns").value.split(",").map(s=>s.trim()).filter(Boolean),
     modelMap: parseMap($("f_modelMap").value),
     testModel: $("f_testModel").value.trim(),

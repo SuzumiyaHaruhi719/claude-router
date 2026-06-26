@@ -2915,17 +2915,66 @@ function readBody(req) {
 // Byte-for-byte passthrough. `log` (optional) = { id, isStream } enables audit-log
 // finalization: we additionally accumulate a capped copy of the body to extract
 // usage/stop_reason/errors — the raw bytes streamed to the client are untouched.
+// Pull a human message out of an upstream error body (JSON {error:{message}} /
+// {message} / {code}, or an SSE "data:" line, or raw text).
+function extractUpstreamErrorMessage(text) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  let jsonStr = t;
+  if (/^event:|\bdata:/m.test(t)) {
+    const dl = t.split(/\r?\n/).find((l) => l.trim().startsWith("data:"));
+    if (dl) jsonStr = dl.replace(/^\s*data:\s*/, "").trim();
+  }
+  try {
+    const o = JSON.parse(jsonStr);
+    if (o && o.error && (o.error.message || o.error.type)) return o.error.message || o.error.type;
+    if (o && o.message) return String(o.message);
+    if (o && o.code) return o.code + (o.message ? ": " + o.message : "");
+    return jsonStr.slice(0, 400);
+  } catch { return t.slice(0, 400); }
+}
+
 async function streamUpstream(res, up, log) {
   const ct = up.headers.get("content-type") || "application/json";
   const headers = { "content-type": ct };
   const logId = log && log.id;
   const isSse = ct.includes("text/event-stream") || (log && log.isStream);
+  const CAP = 65536; // accumulate at most 64KB for parsing/preview
+  // NON-2xx upstream: NEVER forward the raw status+body to the client. Anthropic's SDK,
+  // on a non-2xx streaming request, reads the body as TEXT and JSON.parse()s it — if the
+  // upstream returned an SSE-framed or non-Anthropic-shaped error body (e.g. DashScope's
+  // 400 "event:error\ndata:{code,message}"), that parse fails → "Failed to parse JSON".
+  // Re-shape it: streaming client → 200 + text/event-stream + a proper Anthropic
+  // `event: error` frame (the SDK's stream parser handles it); non-streaming → status +
+  // a clean Anthropic-shaped JSON error.
+  if (up.status >= 400) {
+    let text = "";
+    try {
+      if (up.body) {
+        const reader = up.body.getReader();
+        const dec = new TextDecoder();
+        for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); if (text.length > CAP) break; }
+      }
+    } catch {}
+    const msg = extractUpstreamErrorMessage(text) || `upstream error ${up.status}`;
+    const errType = up.status === 429 ? "rate_limit_error" : (up.status >= 500 ? "api_error" : "invalid_request_error");
+    const errObj = { type: "error", error: { type: errType, message: msg } };
+    if (log && log.isStream) {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" });
+      res.write(`event: error\ndata: ${JSON.stringify(errObj)}\n\n`);
+    } else {
+      res.writeHead(up.status, { "content-type": "application/json" });
+      res.write(JSON.stringify(errObj));
+    }
+    if (logId) markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: msg.slice(0, 300) });
+    res.end();
+    return;
+  }
   if (logId) {
-    requestLog.update(logId, { httpStatus: up.status, status: up.status >= 400 ? "error" : (isSse ? "streaming" : "pending") });
+    requestLog.update(logId, { httpStatus: up.status, status: isSse ? "streaming" : "pending" });
     requestLog.trace(logId, { upstreamHeaders: { "content-type": ct } });
   }
   res.writeHead(up.status, headers);
-  const CAP = 65536; // accumulate at most 64KB for parsing/preview
   let acc = "";
   if (up.body) {
     const reader = up.body.getReader();

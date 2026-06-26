@@ -1017,6 +1017,19 @@
     </div>
   </section>
 
+  <section class="section" aria-labelledby="virtualModelsTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="virtualModelsTitle">Virtual Models</h2>
+        <p class="section-copy">A virtual model is a name Claude Code can request that routes per-request by condition (image / web-search / long-context / keyword). No fusion tool-loop — one backend answers each turn. Virtual models resolve <em>before</em> routes.</p>
+      </div>
+      <button class="primary" id="addVirtualModel" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add virtual model</button>
+    </div>
+    <div class="section-body">
+      <div class="backend-grid" id="virtualModelsGrid"></div>
+    </div>
+  </section>
+
   <section class="section" aria-labelledby="profilesTitle">
     <div class="section-header">
       <div>
@@ -1231,6 +1244,83 @@
   </section>
 </div>
 
+<div class="modal-backdrop" id="virtualModelModal" hidden>
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="virtualModelModalTitle">
+    <div class="modal-head">
+      <h2 id="virtualModelModalTitle">Add virtual model</h2>
+      <button class="icon-only" id="closeVirtualModelModal" type="button" aria-label="Close virtual model editor"><svg aria-hidden="true"><use href="#icon-x"></use></svg></button>
+    </div>
+    <form id="virtualModelForm">
+      <div class="modal-body">
+        <input type="hidden" id="vmOriginalId">
+        <div class="form-grid two">
+          <label>
+            <span>Virtual model ID</span>
+            <input id="vmId" type="text" autocomplete="off" placeholder="fusion-smart" pattern="^[a-z0-9][a-z0-9-]{0,31}$">
+          </label>
+          <label>
+            <span>Display name</span>
+            <input id="vmName" type="text" autocomplete="off" placeholder="Fusion (smart routing)">
+          </label>
+        </div>
+        <div class="form-grid two">
+          <label>
+            <span>Match aliases (comma or newline)</span>
+            <textarea id="vmMatch" spellcheck="false" placeholder="fusion-smart, fusion-*"></textarea>
+          </label>
+          <label class="check-row">
+            <input id="vmEnabled" type="checkbox" checked>
+            <span>Enabled (disabled virtual models are invisible to routing).</span>
+          </label>
+        </div>
+
+        <fieldset>
+          <legend>Rules (evaluated top-down, first match wins)</legend>
+          <div class="table-shell">
+            <table aria-label="Virtual model rules">
+              <thead><tr><th>#</th><th>When</th><th>Backend</th><th>Model</th><th>Condition input</th><th>Actions</th></tr></thead>
+              <tbody id="vmRulesBody"></tbody>
+            </table>
+          </div>
+          <button class="small-btn" type="button" id="vmAddRule"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add rule</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Default target (no rule matches)</legend>
+          <div class="form-grid two">
+            <label>
+              <span>Backend</span>
+              <select id="vmDefaultBackend"></select>
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="vmDefaultModel" type="text" autocomplete="off" placeholder="gpt-5.5">
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Live preview</legend>
+          <label>
+            <span>Sample request body (Anthropic Messages JSON)</span>
+            <textarea id="vmPreviewBody" class="mono" spellcheck="false" style="min-height:120px"></textarea>
+          </label>
+          <div class="row">
+            <button class="small-btn" type="button" id="vmPreviewImage">Use image sample</button>
+            <button class="small-btn" type="button" id="vmPreviewText">Use text sample</button>
+            <button class="small-btn" type="button" id="vmPreviewRun">Preview</button>
+          </div>
+          <div class="test-result" id="vmPreviewResult">Edit the sample body and press Preview to see which rule fires.</div>
+        </fieldset>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="cancelVirtualModel">Cancel</button>
+        <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Save virtual model</button>
+      </div>
+    </form>
+  </section>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -1433,6 +1523,7 @@ function renderAll() {
   renderMapper();
   renderBackends();
   renderRoutes();
+  renderVirtualModels();
   renderProfiles();
 }
 function renderHeader() {
@@ -1456,8 +1547,11 @@ function renderStats() {
   const throttle = aggregateThrottle();
   const enabled = state.backends.filter((b) => b.enabled !== false).length;
   const throttled = state.backends.filter((b) => b.throttle).length;
+  const vms = Array.isArray(state.virtualModels) ? state.virtualModels : [];
+  const vmsEnabled = vms.filter((v) => v.enabled !== false).length;
   const stats = [
     ["Backends", state.backends.length, `${enabled} enabled`, "primary"],
+    ["Virtual models", vms.length, `${vmsEnabled} enabled`, vms.length ? "success" : ""],
     ["Throttle backends", throttled, "Configured in backend cards", throttled ? "success" : ""],
     ["In flight", throttle.inFlight, "Live throttle slots", throttle.inFlight ? "warn" : ""],
     ["Queue depth", throttle.queued, "Waiting upstream dispatch", throttle.queued ? "warn" : ""],
@@ -2011,6 +2105,316 @@ function renderRoutes() {
       <td><button class="icon-only danger" type="button" data-route-action="delete" aria-label="Delete route ${index + 1}">${icon("trash")}</button></td>
     </tr>
   `).join("");
+}
+// --- virtual models (condition-based routing) -----------------------------------
+const VM_WHEN_LABELS = {
+  hasImage: "has image",
+  webSearch: "web search",
+  longContext: "long context",
+  keyword: "keyword",
+  always: "always",
+};
+function vmBackendOptions(selected) {
+  const list = enabledBackends();
+  if (!list.length) return `<option value="">No enabled backends</option>`;
+  return list.map((b) => `<option value="${esc(b.id)}" ${b.id === selected ? "selected" : ""}>${esc(b.name || b.id)} (${esc(b.id)})</option>`).join("");
+}
+function renderVirtualModels() {
+  const grid = $("virtualModelsGrid");
+  const vms = Array.isArray(state.virtualModels) ? state.virtualModels : [];
+  if (!vms.length) {
+    grid.innerHTML = `<div class="empty">No virtual models. Add one to route a client-facing model name by per-request condition (image / web-search / long-context / keyword).</div>`;
+    return;
+  }
+  grid.innerHTML = vms.map((vm) => {
+    const match = (vm.match && vm.match.length) ? vm.match : [vm.id];
+    const rules = Array.isArray(vm.rules) ? vm.rules : [];
+    const ruleChips = rules.length
+      ? rules.map((r) => `<span class="chip"><span>${esc(VM_WHEN_LABELS[r.when] || r.when)} → ${esc(r.backendId)}/${esc(r.model)}${r.when === "longContext" ? ` ≥${esc(r.thresholdTokens)}t` : ""}${r.when === "keyword" ? ` «${esc((r.keywords || []).join(", "))}»` : ""}</span></span>`).join("")
+      : `<span class="soft">no rules (default only)</span>`;
+    return `
+      <article class="backend-card" data-vm-id="${esc(vm.id)}">
+        <div class="card-head">
+          <div>
+            <h3>${esc(vm.name || vm.id)}</h3>
+            <div class="soft mono truncate" title="${esc(vm.id)}">${esc(vm.id)}</div>
+          </div>
+          <label class="switch" title="Enabled">
+            <span class="sr-only">Enable ${esc(vm.name || vm.id)}</span>
+            <input type="checkbox" data-vm-action="toggle" ${vm.enabled !== false ? "checked" : ""}>
+            <span class="track"></span>
+          </label>
+        </div>
+        <div class="meta">
+          <span class="badge ${vm.enabled !== false ? "success" : ""}">${vm.enabled !== false ? "enabled" : "disabled"}</span>
+          <div class="chip-row">${match.map((p) => `<span class="chip"><span>${esc(p)}</span></span>`).join("")}</div>
+        </div>
+        <div class="kv-grid">
+          <div><strong>Rules:</strong><div class="chip-row">${ruleChips}</div></div>
+          <div><strong>Default:</strong> <code>${esc(vm.default.backendId)}/${esc(vm.default.model)}</code></div>
+        </div>
+        <div class="row">
+          <button class="small-btn" type="button" data-vm-action="edit">${icon("edit")}Edit</button>
+          <button class="small-btn danger" type="button" data-vm-action="delete">${icon("trash")}Delete</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+// In-memory draft for the editor modal. Shape mirrors the server VirtualModel.
+let vmDraft = null;
+const VM_SAMPLE_IMAGE = JSON.stringify({
+  model: "fusion-smart", max_tokens: 1024,
+  messages: [{ role: "user", content: [{ type: "text", text: "What is in this image?" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KG..." } }] }],
+}, null, 2);
+const VM_SAMPLE_TEXT = JSON.stringify({
+  model: "fusion-smart", max_tokens: 1024,
+  system: "You are helpful.", messages: [{ role: "user", content: "Hello, what is 2+2?" }],
+}, null, 2);
+
+function newVmDraft() {
+  return { id: "", name: "", enabled: true, match: [], rules: [], default: { backendId: "", model: "" } };
+}
+function cloneVmDraft(vm) {
+  return {
+    id: vm.id || "",
+    name: vm.name || vm.id || "",
+    enabled: vm.enabled !== false,
+    match: Array.isArray(vm.match) ? vm.match.slice() : [],
+    rules: (Array.isArray(vm.rules) ? vm.rules : []).map((r) => ({ ...r })),
+    default: { backendId: (vm.default && vm.default.backendId) || "", model: (vm.default && vm.default.model) || "" },
+  };
+}
+function openVmModal(vm) {
+  lastFocus = document.activeElement;
+  const editing = !!vm;
+  vmDraft = editing ? cloneVmDraft(vm) : newVmDraft();
+  // sensible default backend for the default target + a first rule
+  const list = enabledBackends();
+  const firstId = list[0] ? list[0].id : "";
+  if (!vmDraft.default.backendId && firstId) vmDraft.default.backendId = firstId;
+  if (!editing && !vmDraft.rules.length) {
+    vmDraft.rules.push({ when: "hasImage", backendId: firstId, model: "" });
+  }
+  $("virtualModelModalTitle").textContent = editing ? `Edit virtual model ${vm.id}` : "Add virtual model";
+  $("vmOriginalId").value = editing ? vm.id : "";
+  $("vmId").value = vmDraft.id;
+  $("vmId").disabled = editing;
+  $("vmName").value = vmDraft.name;
+  $("vmEnabled").checked = vmDraft.enabled;
+  $("vmMatch").value = vmDraft.match.join(", ");
+  $("vmDefaultBackend").innerHTML = vmBackendOptions(vmDraft.default.backendId);
+  $("vmDefaultModel").value = vmDraft.default.model;
+  $("vmPreviewBody").value = VM_SAMPLE_IMAGE;
+  $("vmPreviewResult").textContent = "Edit the sample body and press Preview to see which rule fires.";
+  renderVmEditor();
+  $("virtualModelModal").hidden = false;
+  if (!editing) $("vmId").focus(); else $("vmName").focus();
+}
+function closeVmModal() {
+  $("virtualModelModal").hidden = true;
+  vmDraft = null;
+  if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
+}
+function renderVmEditor() {
+  if (!vmDraft) return;
+  const body = $("vmRulesBody");
+  if (!vmDraft.rules.length) {
+    body.innerHTML = `<tr><td colspan="6"><div class="empty">No rules. Only the default target will be used. Add a rule to route by condition.</div></td></tr>`;
+    return;
+  }
+  body.innerHTML = vmDraft.rules.map((rule, index) => {
+    const whenOptions = Object.keys(VM_WHEN_LABELS).map((w) => `<option value="${w}" ${rule.when === w ? "selected" : ""}>${esc(VM_WHEN_LABELS[w])}</option>`).join("");
+    const condCell = rule.when === "longContext"
+      ? `<input type="number" min="1" step="1000" data-vm-rule-field="thresholdTokens" value="${esc(rule.thresholdTokens != null ? rule.thresholdTokens : 200000)}" aria-label="Threshold tokens">`
+      : rule.when === "keyword"
+        ? `<input type="text" data-vm-rule-field="keywords" value="${esc((rule.keywords || []).join(", "))}" placeholder="latest, news" aria-label="Keywords">`
+        : `<span class="soft">—</span>`;
+    return `
+      <tr data-vm-rule-index="${index}">
+        <td>
+          <div class="order-cell">
+            <span class="mono">${index + 1}</span>
+            <button class="icon-only small-btn" type="button" data-vm-rule-action="up" aria-label="Move rule ${index + 1} up" ${index === 0 ? "disabled" : ""}>${icon("up")}</button>
+            <button class="icon-only small-btn" type="button" data-vm-rule-action="down" aria-label="Move rule ${index + 1} down" ${index === vmDraft.rules.length - 1 ? "disabled" : ""}>${icon("down")}</button>
+          </div>
+        </td>
+        <td><select data-vm-rule-field="when" aria-label="Condition for rule ${index + 1}">${whenOptions}</select></td>
+        <td><select data-vm-rule-field="backendId" aria-label="Backend for rule ${index + 1}">${vmBackendOptions(rule.backendId)}</select></td>
+        <td><input type="text" data-vm-rule-field="model" value="${esc(rule.model || "")}" placeholder="claude-opus-4-8" aria-label="Model for rule ${index + 1}"></td>
+        <td>${condCell}</td>
+        <td><button class="icon-only danger" type="button" data-vm-rule-action="delete" aria-label="Delete rule ${index + 1}">${icon("trash")}</button></td>
+      </tr>
+    `;
+  }).join("");
+}
+function vmRuleFromRow(index) {
+  const row = document.querySelector(`tr[data-vm-rule-index="${index}"]`);
+  if (!row || !vmDraft) return null;
+  const get = (field) => { const el = row.querySelector(`[data-vm-rule-field="${field}"]`); return el ? el.value : null; };
+  const rule = vmDraft.rules[index] || {};
+  rule.when = get("when") || rule.when;
+  rule.backendId = get("backendId") || rule.backendId || "";
+  rule.model = (get("model") || "").trim();
+  if (rule.when === "longContext") {
+    const n = parseInt(get("thresholdTokens"), 10);
+    rule.thresholdTokens = Number.isFinite(n) && n > 0 ? n : 200000;
+  } else {
+    delete rule.thresholdTokens;
+  }
+  if (rule.when === "keyword") {
+    rule.keywords = (get("keywords") || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  } else {
+    delete rule.keywords;
+  }
+  vmDraft.rules[index] = rule;
+  return rule;
+}
+function vmSyncAllRulesFromDom() {
+  if (!vmDraft) return;
+  // pull every visible row's fields into the draft so a Save captures in-progress edits
+  for (let i = 0; i < vmDraft.rules.length; i++) vmRuleFromRow(i);
+}
+function vmAddRule() {
+  if (!vmDraft) return;
+  const firstId = enabledBackends()[0] ? enabledBackends()[0].id : "";
+  vmDraft.rules.push({ when: "always", backendId: firstId, model: "" });
+  renderVmEditor();
+}
+function vmMoveRule(index, delta) {
+  if (!vmDraft) return;
+  vmSyncAllRulesFromDom();
+  const target = index + delta;
+  if (target < 0 || target >= vmDraft.rules.length) return;
+  const [moved] = vmDraft.rules.splice(index, 1);
+  vmDraft.rules.splice(target, 0, moved);
+  renderVmEditor();
+}
+function vmDeleteRule(index) {
+  if (!vmDraft) return;
+  vmSyncAllRulesFromDom();
+  vmDraft.rules.splice(index, 1);
+  renderVmEditor();
+}
+
+// Client-side mirror of the server predicates (server.js ruleMatches/evaluateVirtualModel).
+// Kept in sync manually; used only for the live preview pane (the server is the authority
+// at request time). Tolerates body === null.
+function vmBodyHasImage(b) {
+  const msgs = b && Array.isArray(b.messages) ? b.messages : [];
+  for (const m of msgs) { const c = m && m.content; if (Array.isArray(c) && c.some((x) => x && x.type === "image")) return true; }
+  return false;
+}
+function vmBodyHasWebSearch(b) {
+  const tools = b && Array.isArray(b.tools) ? b.tools : [];
+  if (tools.some((t) => { const n = String((t && (t.name || t.type)) || "").toLowerCase(); return n.includes("web_search") || n.includes("websearch"); })) return true;
+  return !!(b && b.metadata && b.metadata.web_search === true);
+}
+function vmEstimateTokens(b) {
+  if (!b || typeof b !== "object") return 0;
+  let chars = 0;
+  const add = (s) => { if (typeof s === "string") chars += s.length; };
+  if (typeof b.system === "string") add(b.system);
+  else if (Array.isArray(b.system)) for (const x of b.system) if (x && x.type === "text") add(x.text);
+  for (const m of (Array.isArray(b.messages) ? b.messages : [])) {
+    const c = m && m.content;
+    if (typeof c === "string") add(c);
+    else if (Array.isArray(c)) for (const x of c) {
+      if (!x) continue;
+      if (x.type === "text") add(x.text);
+      else if (x.type === "tool_result") add(typeof x.content === "string" ? x.content : JSON.stringify(x.content || ""));
+      else if (x.type === "tool_use") add(JSON.stringify(x.input || {}));
+      else if (x.type === "image") chars += 1600;
+    }
+  }
+  if (Array.isArray(b.tools)) chars += JSON.stringify(b.tools).length;
+  return Math.ceil(chars / 4);
+}
+function vmRuleMatches(rule, body) {
+  switch (rule.when) {
+    case "hasImage":    return vmBodyHasImage(body);
+    case "webSearch":   return vmBodyHasWebSearch(body);
+    case "longContext": return vmEstimateTokens(body) > (rule.thresholdTokens || 200000);
+    case "keyword":     { const hay = (function(){ /* bodyText mirror */ const parts=[]; const b=body; if(!b||typeof b!=="object")return""; const add=(s)=>{if(typeof s==="string"&&s)parts.push(s);}; if(typeof b.system==="string")add(b.system); else if(Array.isArray(b.system))for(const x of b.system)if(x&&x.type==="text")add(x.text); for(const m of(Array.isArray(b.messages)?b.messages:[])){const c=m&&m.content; if(typeof c==="string")add(c); else if(Array.isArray(c))for(const x of c){if(!x)continue; if(x.type==="text")add(x.text); else if(x.type==="tool_result")add(typeof x.content==="string"?x.content:JSON.stringify(x.content||"")); else if(x.type==="tool_use")add(JSON.stringify(x.input||{}));}} return parts.join("\n"); })().toLowerCase(); return (rule.keywords||[]).some((k)=>k&&hay.includes(k)); }
+    case "always":      return true;
+    default:            return false;
+  }
+}
+function vmEvaluateDraft(body) {
+  if (!vmDraft) return null;
+  for (const rule of vmDraft.rules) {
+    if (vmRuleMatches(rule, body)) return { matchedRule: rule.when, backendId: rule.backendId, model: rule.model };
+  }
+  return { matchedRule: "default", backendId: vmDraft.default.backendId, model: vmDraft.default.model };
+}
+function vmRunPreview() {
+  if (!vmDraft) return;
+  vmSyncAllRulesFromDom();
+  // also sync default + top-level fields from the DOM (they may be mid-edit)
+  vmDraft.default.backendId = $("vmDefaultBackend").value;
+  vmDraft.default.model = $("vmDefaultModel").value.trim();
+  const raw = $("vmPreviewBody").value;
+  let body = null;
+  try { body = raw.trim() ? JSON.parse(raw) : null; } catch (e) { $("vmPreviewResult").textContent = `Invalid JSON: ${e.message}`; return; }
+  const t = vmEvaluateDraft(body);
+  if (!t) { $("vmPreviewResult").textContent = "Nothing to evaluate."; return; }
+  const tokens = vmEstimateTokens(body);
+  const flags = [`hasImage=${vmBodyHasImage(body)}`, `webSearch=${vmBodyHasWebSearch(body)}`, `~${tokens}t`].join("  ");
+  $("vmPreviewResult").innerHTML = `<strong>${esc(t.matchedRule)}</strong> → <code>${esc(t.backendId || "(none)")}/${esc(t.model || "(none)")}</code><br><span class="soft">${esc(flags)}</span>`;
+}
+function vmPayloadFromForm() {
+  vmSyncAllRulesFromDom();
+  const id = $("vmId").value.trim();
+  const match = $("vmMatch").value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+  return {
+    id: id || undefined,
+    name: $("vmName").value.trim() || id || undefined,
+    enabled: $("vmEnabled").checked,
+    match: match.length ? match : undefined,
+    rules: vmDraft.rules.map((r) => {
+      const out = { when: r.when, backendId: r.backendId, model: r.model };
+      if (r.when === "longContext") out.thresholdTokens = r.thresholdTokens;
+      if (r.when === "keyword") out.keywords = r.keywords;
+      return out;
+    }),
+    default: { backendId: $("vmDefaultBackend").value, model: $("vmDefaultModel").value.trim() },
+  };
+}
+async function saveVirtualModel(event) {
+  event.preventDefault();
+  const editing = $("vmOriginalId").value;
+  const payload = vmPayloadFromForm();
+  if (!payload.default.backendId || !payload.default.model) { toast("Default target (backend + model) is required", "warn"); return; }
+  for (const r of payload.rules) { if (!r.backendId || !r.model) { toast(`Rule "${r.when}" needs both a backend and a model`, "warn"); return; } }
+  try {
+    if (editing) {
+      await api("PUT", `/api/virtual-models/${pathName(editing)}`, payload);
+      toast("Virtual model updated", "ok");
+    } else {
+      await api("POST", "/api/virtual-models", payload);
+      toast("Virtual model created", "ok");
+    }
+    closeVmModal();
+    await loadAll({ quiet: true });
+  } catch (error) {
+    toast(error.message || String(error), "err");
+  }
+}
+async function toggleVirtualModel(id, enabled) {
+  try {
+    await api("PUT", `/api/virtual-models/${pathName(id)}`, { enabled });
+    await loadAll({ quiet: true });
+    toast(`Virtual model ${enabled ? "enabled" : "disabled"}`, "ok");
+  } catch (error) { toast(error.message, "err"); await loadAll({ quiet: true }); }
+}
+async function deleteVirtualModel(id) {
+  if (!confirm(`Delete virtual model ${id}?`)) return;
+  try {
+    await api("DELETE", `/api/virtual-models/${pathName(id)}`);
+    await loadAll({ quiet: true });
+    toast("Virtual model deleted", "ok");
+  } catch (error) { toast(error.message, "err"); await loadAll({ quiet: true }); }
 }
 function renderProfiles() {
   const names = Object.keys(state.profiles || {});
@@ -2641,6 +3045,65 @@ function bindEvents() {
     await loadAll({ quiet: true });
     toast("Route added", "ok");
   });
+
+  // --- virtual models ----------------------------------------------------------
+  $("addVirtualModel").addEventListener("click", () => {
+    if (!enabledBackends().length) { toast("Add a backend before defining a virtual model", "warn"); return; }
+    openVmModal(null);
+  });
+  $("virtualModelsGrid").addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-vm-id]");
+    if (!card) return;
+    const id = card.dataset.vmId;
+    const vm = (Array.isArray(state.virtualModels) ? state.virtualModels : []).find((v) => v.id === id);
+    if (!vm) return;
+    const actionEl = event.target.closest("[data-vm-action]");
+    if (!actionEl) return;
+    const action = actionEl.dataset.vmAction;
+    if (action === "toggle") {
+      // let the checkbox visual flip first, then persist the new state
+      const enabled = actionEl.checked;
+      await toggleVirtualModel(id, enabled);
+    } else if (action === "edit") {
+      openVmModal(vm);
+    } else if (action === "delete") {
+      await deleteVirtualModel(id);
+    }
+  });
+  $("closeVirtualModelModal").addEventListener("click", closeVmModal);
+  $("cancelVirtualModel").addEventListener("click", closeVmModal);
+  $("virtualModelModal").addEventListener("click", (event) => { if (event.target.id === "virtualModelModal") closeVmModal(); });
+  $("virtualModelModal").addEventListener("keydown", (event) => { if (event.key === "Escape") closeVmModal(); });
+  $("vmAddRule").addEventListener("click", vmAddRule);
+  $("vmRulesBody").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-vm-rule-action]");
+    if (!btn) return;
+    const row = event.target.closest("[data-vm-rule-index]");
+    const index = Number(row && row.dataset.vmRuleIndex);
+    const action = btn.dataset.vmRuleAction;
+    if (action === "up") vmMoveRule(index, -1);
+    else if (action === "down") vmMoveRule(index, 1);
+    else if (action === "delete") vmDeleteRule(index);
+  });
+  // when the `when` select changes, re-render the row so the conditional input swaps
+  $("vmRulesBody").addEventListener("change", (event) => {
+    const sel = event.target.closest('[data-vm-rule-field="when"]');
+    if (!sel) return;
+    const row = event.target.closest("[data-vm-rule-index]");
+    const index = Number(row && row.dataset.vmRuleIndex);
+    if (vmDraft && vmDraft.rules[index]) {
+      vmSyncAllRulesFromDom();
+      vmDraft.rules[index].when = sel.value;
+      if (vmDraft.rules[index].when === "longContext" && vmDraft.rules[index].thresholdTokens == null) vmDraft.rules[index].thresholdTokens = 200000;
+      if (vmDraft.rules[index].when === "keyword" && !Array.isArray(vmDraft.rules[index].keywords)) vmDraft.rules[index].keywords = [];
+      renderVmEditor();
+    }
+  });
+  $("vmPreviewImage").addEventListener("click", () => { $("vmPreviewBody").value = VM_SAMPLE_IMAGE; vmRunPreview(); });
+  $("vmPreviewText").addEventListener("click", () => { $("vmPreviewBody").value = VM_SAMPLE_TEXT; vmRunPreview(); });
+  $("vmPreviewRun").addEventListener("click", vmRunPreview);
+  $("virtualModelForm").addEventListener("submit", saveVirtualModel);
+
   $("profileList").addEventListener("click", (event) => {
     const button = event.target.closest("[data-profile-name]");
     if (!button) return;
@@ -2699,7 +3162,7 @@ function init() {
   loadAll({ quiet: true });
   pollTimer = setInterval(() => {
     const editingProfile = document.activeElement && document.activeElement.closest && document.activeElement.closest("#profileForm");
-    if ($("autoRefresh").checked && $("backendModal").hidden && $("accountModal").hidden && !editingProfile && !poolInputFocused() && testsInFlight === 0) loadAll({ quiet: true });
+    if ($("autoRefresh").checked && $("backendModal").hidden && $("accountModal").hidden && $("virtualModelModal").hidden && !editingProfile && !poolInputFocused() && testsInFlight === 0) loadAll({ quiet: true });
   }, 3000);
   window.addEventListener("beforeunload", () => clearInterval(pollTimer));
 }

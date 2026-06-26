@@ -164,6 +164,37 @@ If you have an OpenAI **API key** instead of a subscription, add a separate `for
 - **Streaming (openai-responses)**: `response.output_text.delta` → `text_delta`; `response.function_call_arguments.delta` → `input_json_delta.partial_json`; `response.output_item.added` (function_call) opens a `tool_use` block carrying `call_id`+`name`; `response.completed` → `message_delta` + `message_stop`. `store:false` + `stream:true` always set.
 - **`/v1/messages/count_tokens`** on an openai/openai-responses backend returns a heuristic (`chars/4`) — neither has a count endpoint.
 
+## Virtual models (condition-based routing)
+
+A **virtual model** is a client-facing model *name* (e.g. `fusion-smart`) that Claude Code can request as if it were real, and that the router resolves **per request** to one of several backend/model targets by evaluating ordered `condition → target` rules against the request body — first match wins, else a `default` target. Define them under the top-level `virtualModels[]` key in `backends.json`:
+
+```jsonc
+{
+  "virtualModels": [{
+    "id": "fusion-smart",
+    "name": "Fusion (smart routing)",
+    "enabled": true,
+    "match": ["fusion-smart", "fusion-*"],          // aliases the client may request (glob); defaults to [id]
+    "rules": [
+      { "when": "hasImage",    "backendId": "claude", "model": "claude-opus-4-8" },                // any image content block
+      { "when": "webSearch",   "backendId": "glm",    "model": "glm-5.2" },                        // request declares a web_search tool or metadata.web_search
+      { "when": "longContext", "backendId": "gemini", "model": "gemini-2.5-pro", "thresholdTokens": 200000 }, // local ~chars/4 token estimate
+      { "when": "keyword",    "backendId": "glm",    "model": "glm-5.2", "keywords": ["latest","today","news"] }
+    ],
+    "default": { "backendId": "codex", "model": "gpt-5.5" }                                        // required fallback
+  }]
+}
+```
+
+`when` is one of `hasImage | webSearch | longContext | keyword | always` (use `always` for a pure alias). Resolution happens in `proxy()` **between body parse and backend dispatch**: the matched target rewrites `body.model` to a real upstream model, then the existing passthrough/translate path runs unchanged (the chosen backend's `modelMap` still applies). Virtual models resolve **before** routes, so a non-matching model name falls through to normal routing byte-identically.
+
+**This is a routing feature, not an agentic tool loop.** It deliberately does NOT replicate CCR's fusion mechanism: there is no hidden internal tool, no bundled MCP server, no multi-turn executor, and **exactly one upstream call per request** — the base model still owns the full answer; we only pick *which* backend serves that single turn based on request shape. (If you want true multi-model orchestration later, that is a separate spec with its own loop runtime.)
+
+- **Purely additive / non-regressive:** with no `virtualModels` key, behavior is byte-identical to today.
+- **A VM `id` must not collide with any `backendId`** (kept distinct so resolver namespaces stay clean).
+- **Dangling `backendId`** in a matched rule (e.g. a backend was deleted after the rule was saved) degrades gracefully — the router falls back to glob-routing the resolved model instead of a hard 502.
+- **REST API:** `GET/POST /api/virtual-models`, `PUT/DELETE /api/virtual-models/:id` (admin-guarded writes), and a read-only `POST /api/virtual-models/:id/preview` (send a sample body → `{matchedRule, backendId, model}`). The WebUI has a Virtual Models section with a reorderable rule editor and a live preview pane.
+
 ## Security
 
 - **Localhost-only:** `HOST = 127.0.0.1` — never listens on a public interface.

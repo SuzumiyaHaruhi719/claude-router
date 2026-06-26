@@ -1225,6 +1225,58 @@ function normalizeProfiles(profiles) {
   return out;
 }
 
+// --- virtual models (condition-based routing) -----------------------------------
+// A virtual model is a client-facing model NAME whose routing target is chosen per
+// request by evaluating ordered `rules` against the request body (first match wins),
+// else `default`. Purely additive: when `virtualModels` is empty/absent, proxy()
+// behaves byte-identically to today. This is a ROUTING feature, not an agentic tool
+// loop — exactly one upstream call is made per request (see spec §0/§2).
+const VM_WHEN_SET = new Set(["hasImage", "webSearch", "longContext", "keyword", "always"]);
+function normalizeVirtualRule(r) {
+  if (!r || typeof r !== "object") return null;
+  const when = String(r.when || "");
+  if (!VM_WHEN_SET.has(when)) return null;                 // unknown predicate → drop rule
+  const backendId = String(r.backendId || "");
+  const model = String(r.model || "");
+  if (!backendId || !model) return null;                   // target must be resolvable
+  const out = { when, backendId, model };
+  if (when === "longContext") {
+    out.thresholdTokens = clampInt(r.thresholdTokens, 200000, 1, 10_000_000);
+  }
+  if (when === "keyword") {
+    const kws = Array.isArray(r.keywords)
+      ? r.keywords.map((k) => String(k || "").toLowerCase().trim()).filter(Boolean)
+      : [];
+    if (!kws.length) return null;                          // keyword rule with no keywords → drop
+    out.keywords = kws;
+  }
+  return out;
+}
+// Returns a clean plain object with exactly { id, name, enabled, match, rules, default },
+// or null if the entry is invalid (dropped at load time). Mirrors normalizeBackend
+// discipline: downstream code can trust the shape. Not frozen (consistency with the
+// rest of the config layer; resolveVirtualModel returns a fresh clone before any
+// per-request scratch field is written, so the cfg-level object is never mutated).
+function normalizeVirtualModel(v) {
+  if (!v || typeof v !== "object") return null;
+  const id = String(v.id || "");
+  if (!ID_RE.test(id)) return null;
+  const name = v.name ? String(v.name) : id;
+  const enabled = v.enabled !== false;
+  let match = Array.isArray(v.match) ? v.match.map((m) => String(m || "").trim()).filter(Boolean) : [];
+  if (!match.length) match = [id];
+  const rules = Array.isArray(v.rules) ? v.rules.map(normalizeVirtualRule).filter(Boolean) : [];
+  const dflt = v.default && typeof v.default === "object" ? v.default : null;
+  const defBackendId = dflt ? String(dflt.backendId || "") : "";
+  const defModel = dflt ? String(dflt.model || "") : "";
+  if (!defBackendId || !defModel) return null;             // a VM must always be resolvable
+  return { id, name, enabled, match, rules, default: { backendId: defBackendId, model: defModel } };
+}
+function normalizeVirtualModels(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeVirtualModel).filter(Boolean);
+}
+
 function synthesizeFromEnv() {
   if (STATIC_KEY) {                              // existing KEY_MODE
     return {
@@ -1233,6 +1285,7 @@ function synthesizeFromEnv() {
         modelPatterns:["*"], modelMap:{}, testModel:"", enabled:true })],
       routes: [{ pattern:"*", backendId:"default" }],
       profiles: {}, activeProfile: null,
+      virtualModels: [],
     };
   }
   // OAuth subscription (existing)
@@ -1242,6 +1295,7 @@ function synthesizeFromEnv() {
       modelPatterns:["*"], modelMap:{}, testModel:"claude-opus-4-8", enabled:true })],
     routes: [{ pattern:"*", backendId:"default" }],
     profiles: {}, activeProfile: null,
+    virtualModels: [],
   };
 }
 
@@ -1254,6 +1308,7 @@ function loadConfig(file = CFG_FILE) {
     cfg.routes = Array.isArray(cfg.routes) ? cfg.routes : [];
     cfg.profiles = normalizeProfiles(cfg.profiles);
     cfg.activeProfile = cfg.activeProfile || null;
+    cfg.virtualModels = normalizeVirtualModels(cfg.virtualModels);
     return cfg;
   } catch { return synthesizeFromEnv(); }
 }
@@ -1305,6 +1360,116 @@ function resolveBackendCfg(cfg, model) {
 // Thin wrapper: load config from disk, then route.
 function resolveBackend(model) {
   return resolveBackendCfg(loadConfig(), model);
+}
+
+// --- virtual-model predicates (pure, null-safe) ---------------------------------
+// All walkers guard Array.isArray and tolerate body === null (non-JSON passthrough):
+// they return false/0 so a VM-named request with an unparseable body degrades to the
+// default target rather than throwing.
+function bodyHasImage(body) {
+  const msgs = body && Array.isArray(body.messages) ? body.messages : [];
+  for (const m of msgs) {
+    const c = m && m.content;
+    if (Array.isArray(c) && c.some((b) => b && b.type === "image")) return true;
+  }
+  return false;
+}
+// A request "advertises" web search if it declares a tool whose name/type looks like a
+// web-search tool, OR the caller set metadata.web_search === true. (Mirrors CCR's
+// hasWebSearchTool Router-rule signal — request-shape detection only, no search API.)
+function bodyHasWebSearchTool(body) {
+  const tools = body && Array.isArray(body.tools) ? body.tools : [];
+  return tools.some((t) => {
+    const n = String((t && (t.name || t.type)) || "").toLowerCase();
+    return n.includes("web_search") || n.includes("websearch");
+  });
+}
+// Cheap local token estimate: ~4 chars/token over every text we can see + a coarse
+// constant per image block. Monotonic + stable is all the threshold decision needs;
+// it is NOT used for billing and never makes an upstream count_tokens call (spec §2/§5.3).
+function estimateInputTokens(body) {
+  let chars = 0;
+  if (!body || typeof body !== "object") return 0;
+  const add = (s) => { if (typeof s === "string") chars += s.length; };
+  if (typeof body.system === "string") add(body.system);
+  else if (Array.isArray(body.system)) for (const b of body.system) if (b && b.type === "text") add(b.text);
+  for (const m of (Array.isArray(body.messages) ? body.messages : [])) {
+    const c = m && m.content;
+    if (typeof c === "string") add(c);
+    else if (Array.isArray(c)) for (const b of c) {
+      if (!b) continue;
+      if (b.type === "text") add(b.text);
+      else if (b.type === "tool_result") add(typeof b.content === "string" ? b.content : JSON.stringify(b.content || ""));
+      else if (b.type === "tool_use") add(JSON.stringify(b.input || {}));
+      else if (b.type === "image") chars += 1600; // ~ one image ≈ a few hundred tokens; coarse constant
+    }
+  }
+  if (Array.isArray(body.tools)) chars += JSON.stringify(body.tools).length;
+  return Math.ceil(chars / 4);
+}
+// Joined user+system+assistant text for keyword matching (substring, case-insensitive).
+function bodyText(body) {
+  if (!body || typeof body !== "object") return "";
+  const parts = [];
+  const add = (s) => { if (typeof s === "string" && s) parts.push(s); };
+  if (typeof body.system === "string") add(body.system);
+  else if (Array.isArray(body.system)) for (const b of body.system) if (b && b.type === "text") add(b.text);
+  for (const m of (Array.isArray(body.messages) ? body.messages : [])) {
+    const c = m && m.content;
+    if (typeof c === "string") add(c);
+    else if (Array.isArray(c)) for (const b of c) {
+      if (!b) continue;
+      if (b.type === "text") add(b.text);
+      else if (b.type === "tool_result") add(typeof b.content === "string" ? b.content : JSON.stringify(b.content || ""));
+      else if (b.type === "tool_use") add(JSON.stringify(b.input || {}));
+    }
+  }
+  return parts.join("\n");
+}
+function ruleKeywordMatch(rule, body) {
+  const kws = Array.isArray(rule.keywords) ? rule.keywords : [];
+  if (!kws.length) return false;
+  const hay = bodyText(body).toLowerCase();
+  return kws.some((k) => k && hay.includes(k));
+}
+function ruleMatches(rule, body) {
+  switch (rule.when) {
+    case "hasImage":    return bodyHasImage(body);
+    case "webSearch":   return bodyHasWebSearchTool(body) || !!(body && body.metadata && body.metadata.web_search === true);
+    case "longContext": return estimateInputTokens(body) > rule.thresholdTokens;
+    case "keyword":     return ruleKeywordMatch(rule, body);
+    case "always":      return true;
+    default:            return false;
+  }
+}
+// Resolve a requested model name to a (cloned) virtual model, or null. First enabled
+// VM whose `match` glob hits wins. Returns a fresh shallow clone with cloned
+// rules/default so per-request scratch (`_resolvedTarget`) never touches the shared
+// cfg-level object.
+function resolveVirtualModel(cfg, model) {
+  const vms = Array.isArray(cfg && cfg.virtualModels) ? cfg.virtualModels : [];
+  if (!vms.length || !model) return null;
+  const m = String(model).toLowerCase();
+  for (const vm of vms) {
+    if (vm.enabled === false) continue;
+    if ((vm.match || []).some((p) => matchPattern(m, p))) {
+      return { ...vm, rules: vm.rules.map((r) => ({ ...r })), default: { ...vm.default } };
+    }
+  }
+  return null;
+}
+// Evaluate ordered rules against the body; first match wins, else default. Pure and
+// synchronous; stashes the chosen target on the (per-request clone) vm._resolvedTarget
+// so proxy() can look the backend up directly without re-evaluating.
+function evaluateVirtualModel(vm, body, cfg) {
+  for (const rule of vm.rules) {
+    if (ruleMatches(rule, body)) {
+      const t = { backendId: rule.backendId, model: rule.model, matchedRule: rule.when };
+      vm._resolvedTarget = t; return t;
+    }
+  }
+  const t = { backendId: vm.default.backendId, model: vm.default.model, matchedRule: "default" };
+  vm._resolvedTarget = t; return t;
 }
 
 function maskKey(k) {
@@ -2427,6 +2592,12 @@ const requestLog = {
         backendName: backend ? (backend.name || backend.id) : null,
         backendFormat: backend ? backend.format : null,
         authScheme: backend ? (backend.authScheme || (backend.codexOauth ? "codex-oauth" : "bearer")) : null,
+        // Additive virtual-model fields (absent on normal requests — non-regressive).
+        // `requestedModel` above already reflects the rewritten target model; these
+        // carry the original alias + which rule fired for the inspector.
+        virtualModelId: (req && req._virtualModel) ? req._virtualModel.id : null,
+        virtualRequestedModel: (req && req._virtualModel) ? (req._virtualModel.requested || null) : null,
+        virtualMatchedRule: (req && req._virtualModel) ? (req._virtualModel.rule || null) : null,
         upstream: null,
         accountId: null,
         organizationName: null,
@@ -2743,20 +2914,42 @@ async function streamUpstream(res, up, log) {
 }
 
 // proxy(): read body once (raw + parsed), route by body.model, dispatch by format.
+// Virtual-model resolution (if any VM matches body.model) happens BETWEEN body parse
+// and backend dispatch: it rewrites body.model to the chosen target model so every
+// downstream path (passthrough/translate/modelMap) sees a real upstream model. When no
+// VM is defined or body.model is not a VM alias, the path is byte-identical to today.
 async function proxy(req, res) {
   const raw = await readBody(req);
   req._rawBody = raw;
   let body = null;
   if (raw.length) { try { body = JSON.parse(raw.toString("utf8")); } catch { body = null; } } // non-JSON → passthrough raw
   req._body = body;
-  const model = body && body.model;
-  const backend = resolveBackend(model);
+  const cfg = loadConfig();                          // single load for this request
+  const requestedModel = body && body.model;
+  // --- virtual-model resolution (no-op when none defined / model not a VM) ---
+  const vm = resolveVirtualModel(cfg, requestedModel);   // null when not a VM or none defined
+  let target = null;
+  let routeModel = requestedModel;
+  if (vm) {
+    target = evaluateVirtualModel(vm, body, cfg);        // {backendId, model, matchedRule}
+    routeModel = target.model;                           // route + send-as this model
+    if (body) { body = { ...body, model: target.model }; req._body = body; req._rawBody = Buffer.from(JSON.stringify(body)); }
+    req._virtualModel = { id: vm.id, requested: requestedModel, target, rule: target.matchedRule };
+  }
+  // Backend dispatch. For a VM, look the chosen target up directly; if that backend is
+  // dangling/disabled (config went stale after a backend was deleted), gracefully fall
+  // back to glob-routing the now-real routeModel — never a hard 502 from a stale VM
+  // rule. The non-VM branch is byte-identical to the previous resolveBackend(model) call
+  // (resolveBackend was just resolveBackendCfg(loadConfig(), model)).
+  const backend = vm
+    ? (cfg.backends.find((b) => b.id === target.backendId && b.enabled !== false) || resolveBackendCfg(cfg, routeModel))
+    : resolveBackendCfg(cfg, routeModel);
   // Audit log: NEVER let logging failures fail a user request (requestLog.start swallows).
   const logId = requestLog.start(req, body, backend);
   req._requestLogId = logId;
   if (!backend) {
-    requestLog.finish(logId, { status: "error", httpStatus: 502, errorPreview: `no backend for model ${model || "<none>"}` });
-    return sendJson(res, 502, { error: { type: "proxy_error", message: `no backend for model ${model || "<none>"}` } });
+    requestLog.finish(logId, { status: "error", httpStatus: 502, errorPreview: `no backend for model ${requestedModel || "<none>"}` });
+    return sendJson(res, 502, { error: { type: "proxy_error", message: `no backend for model ${requestedModel || "<none>"}` } });
   }
   if (backend.format === "openai") return openaiTranslate(req, res, backend, body);
   if (backend.format === "openai-responses") return openaiResponsesTranslate(req, res, backend, body);
@@ -3223,6 +3416,7 @@ function apiState() {
     oauthStatus: statusLine().text,
     backends: cfg.backends.map(maskBackend),
     routes: cfg.routes,
+    virtualModels: cfg.virtualModels || [],
     profiles: cfg.profiles || {},
     activeProfile: cfg.activeProfile || null,
     throttleStats: throttleStatsForConfig(cfg),
@@ -3300,6 +3494,116 @@ async function apiReorderRoutes(req) {
   cfg.routes = order.map((i) => cfg.routes[i]);
   saveConfig(cfg);
   return cfg.routes;
+}
+
+// --- virtual-models REST API (mirrors routes/backends; writes admin-guarded) -----
+// VMs hold no secrets, so GET returns them unmasked. Write handlers validate that
+// every rule's backendId + default.backendId reference an existing backend (reject 400
+// at write time); resolve-time fallback in proxy() only covers configs that go stale
+// *after* a backend is later deleted.
+function vmHttpError(status, message) { const e = new Error(message); e.status = status; return e; }
+function suggestVirtualModelId(name, cfg) {
+  const slug = String(name || "").toLowerCase().trim()
+    .replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+  const base = slug && /^[a-z0-9]/.test(slug) ? slug : "vm";
+  const taken = new Set([
+    ...(cfg.backends || []).map((b) => b.id),
+    ...(cfg.virtualModels || []).map((v) => v.id),
+  ]);
+  if (!taken.has(base) && ID_RE.test(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const id = `${base.slice(0, Math.max(1, 32 - suffix.length))}${suffix}`;
+    if (!taken.has(id) && ID_RE.test(id)) return id;
+  }
+}
+function exactRouteOrPatternCollision(alias, cfg, selfId = "") {
+  const a = String(alias || "").trim().toLowerCase();
+  if (!a || a.includes("*")) return null; // globs are explicit advanced matches; exact aliases get collision protection.
+  const vm = (cfg.virtualModels || []).find((v) => v.id !== selfId && (v.match || []).some((p) => String(p || "").trim().toLowerCase() === a));
+  if (vm) return `another virtual model (${vm.id})`;
+  const backendId = (cfg.backends || []).find((b) => String(b.id || "").toLowerCase() === a);
+  if (backendId) return `backend id (${backendId.id})`;
+  const route = (cfg.routes || []).find((r) => !String(r.pattern == null ? "*" : r.pattern).includes("*") && String(r.pattern == null ? "*" : r.pattern).toLowerCase() === a);
+  if (route) return `route pattern (${route.pattern})`;
+  const patBackend = (cfg.backends || []).find((b) => (b.modelPatterns || []).some((p) => !String(p == null ? "*" : p).includes("*") && String(p == null ? "*" : p).toLowerCase() === a));
+  if (patBackend) return `backend model pattern (${patBackend.id}:${a})`;
+  return null;
+}
+function validateVirtualModelBackends(vm, cfg) {
+  const ids = new Set((cfg.backends || []).map((b) => b.id));
+  for (const alias of (vm.match || [])) {
+    const collision = exactRouteOrPatternCollision(alias, cfg, vm.id);
+    if (collision) throw vmHttpError(409, `virtual model match alias ${JSON.stringify(alias)} collides with ${collision}`);
+  }
+  for (const r of vm.rules) {
+    if (!ids.has(r.backendId)) throw vmHttpError(400, `rule references unknown backendId: ${r.backendId}`);
+  }
+  if (!ids.has(vm.default.backendId)) throw vmHttpError(400, `default references unknown backendId: ${vm.default.backendId}`);
+}
+async function apiCreateVirtualModel(req) {
+  const input = await readJson(req);
+  const cfg = loadConfig();
+  let id = input && input.id ? String(input.id) : "";
+  if (!id) id = suggestVirtualModelId(input && input.name, cfg);
+  if (!ID_RE.test(id)) throw vmHttpError(400, `invalid id (must match ${ID_RE})`);
+  if (cfg.backends.some((b) => b.id === id)) throw vmHttpError(409, `id collides with a backend id: ${id}`);
+  if ((cfg.virtualModels || []).some((v) => v.id === id)) throw vmHttpError(409, `virtual model already exists: ${id}`);
+  const n = normalizeVirtualModel({ ...(input || {}), id });
+  if (!n) throw vmHttpError(400, "virtual model is invalid: a resolvable default target (backendId + model) is required");
+  validateVirtualModelBackends(n, cfg);
+  cfg.virtualModels.push(n);
+  saveConfig(cfg);
+  return n;
+}
+async function apiUpdateVirtualModel(req, id) {
+  const patch = await readJson(req);
+  const cfg = loadConfig();
+  const list = cfg.virtualModels || [];
+  const idx = list.findIndex((v) => v.id === id);
+  if (idx < 0) throw vmHttpError(404, `virtual model not found: ${id}`);
+  const cur = list[idx];
+  // Deep-merge allowed fields; id is immutable. Arrays (match/rules) replace when
+  // provided; default target is shallow-merged (it is just {backendId, model}).
+  const merged = normalizeVirtualModel({
+    id: cur.id,
+    name: patch.name != null ? patch.name : cur.name,
+    enabled: patch.enabled != null ? patch.enabled : cur.enabled,
+    match: Array.isArray(patch.match) ? patch.match : cur.match,
+    rules: Array.isArray(patch.rules) ? patch.rules : cur.rules,
+    default: (patch.default && typeof patch.default === "object") ? { ...cur.default, ...patch.default } : cur.default,
+  });
+  if (!merged) throw vmHttpError(400, "virtual model is invalid: a resolvable default target (backendId + model) is required");
+  validateVirtualModelBackends(merged, cfg);
+  list[idx] = merged;
+  cfg.virtualModels = list;
+  saveConfig(cfg);
+  return merged;
+}
+async function apiDeleteVirtualModel(id) {
+  const cfg = loadConfig();
+  const list = cfg.virtualModels || [];
+  const before = list.length;
+  cfg.virtualModels = list.filter((v) => v.id !== id);
+  if (cfg.virtualModels.length === before) throw vmHttpError(404, `virtual model not found: ${id}`);
+  saveConfig(cfg);
+  return cfg.virtualModels;
+}
+// Read-only preview: run evaluateVirtualModel against a sample body the WebUI pastes.
+// Pure (no disk write); admin not required. Returns which rule fired + the target.
+async function apiPreviewVirtualModel(id, req) {
+  const cfg = loadConfig();
+  const vm = (cfg.virtualModels || []).find((v) => v.id === id);
+  if (!vm) throw vmHttpError(404, `virtual model not found: ${id}`);
+  const posted = await readJson(req);
+  // Accept the sample request body either directly (the natural shape a client/CC sends:
+  // {model, messages, tools, ...}) OR wrapped as {body:{...}}. Earlier this only read
+  // `.body`, so a directly-posted sample evaluated as undefined → every rule missed →
+  // always "default". Prefer .body when it's an object, else treat the payload as the body.
+  const body = posted && typeof posted.body === "object" && posted.body !== null ? posted.body : posted;
+  const clone = { ...vm, rules: vm.rules.map((r) => ({ ...r })), default: { ...vm.default } };
+  const target = evaluateVirtualModel(clone, body, cfg);
+  return { matchedRule: target.matchedRule, backendId: target.backendId, model: target.model };
 }
 function validateProfileForConfig(profile, cfg) {
   if (!profile.primaryModel) throw new Error("profile primaryModel is required");
@@ -3569,6 +3873,30 @@ async function apiRouter(req, res, url) {
       if (seg[2] === "order" && method === "PUT") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiReorderRoutes(req)); }
       if (method === "DELETE") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiDeleteRoute(parseInt(seg[2], 10))); }
       return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+    }
+  }
+
+  if (head === "virtual-models") {
+    try {
+      if (seg.length === 2) {
+        if (method === "GET") return sendJson(res, 200, loadConfig().virtualModels || []);
+        if (method === "POST") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiCreateVirtualModel(req)); }
+        return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+      }
+      if (seg.length === 3) {
+        const id = seg[2];
+        if (method === "PUT") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiUpdateVirtualModel(req, id)); }
+        if (method === "DELETE") { if (!isAdminOk(req)) return adminDenied(res); return sendJson(res, 200, await apiDeleteVirtualModel(id)); }
+        return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+      }
+      if (seg.length === 4 && seg[3] === "preview" && method === "POST") {
+        return sendJson(res, 200, await apiPreviewVirtualModel(seg[2], req)); // read-only, no admin guard
+      }
+      return sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown virtual-models api path " + url } });
+    } catch (e) {
+      const status = e && e.status ? e.status : 500;
+      const type = status === 404 ? "not_found" : status === 409 ? "conflict" : "api_error";
+      return sendJson(res, status, { error: { type, message: String(e && e.message || e) } });
     }
   }
 
@@ -4130,6 +4458,189 @@ function selftestRequestLog() {
   console.log("selftest OK (request-inspector)");
 }
 
+// --- virtual models: normalization + predicates + resolution + non-regression ----
+function selftestVirtualModels() {
+  const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1); } };
+
+  // (8.1) Normalization ---------------------------------------------------------
+  // Valid VM round-trips with all fields.
+  const full = normalizeVirtualModel({
+    id: "fusion-smart", name: "Fusion (smart routing)", enabled: true, match: ["fusion-smart", "fusion-*"],
+    rules: [
+      { when: "hasImage",    backendId: "claude", model: "claude-opus-4-8" },
+      { when: "longContext", backendId: "gemini", model: "gemini-2.5-pro", thresholdTokens: 200000 },
+      { when: "keyword",     backendId: "glm",    model: "glm-5.2", keywords: ["LATEST", "Today "] },
+    ],
+    default: { backendId: "codex", model: "gpt-5.5" },
+  });
+  assert(full && full.id === "fusion-smart", "vm: valid round-trips with id");
+  assert(Array.isArray(full.rules) && full.rules.length === 3, "vm: all 3 rules survive");
+  assert(full.default.backendId === "codex" && full.default.model === "gpt-5.5", "vm: default preserved");
+  // match defaults to [id] when omitted
+  const noMatch = normalizeVirtualModel({ id: "vm1", default: { backendId: "b", model: "m" } });
+  assert(JSON.stringify(noMatch.match) === JSON.stringify(["vm1"]), "vm: match defaults to [id]");
+  assert(noMatch.enabled === true, "vm: enabled defaults to true");
+  assert(noMatch.name === "vm1", "vm: name defaults to id");
+  // bad id → dropped
+  assert(normalizeVirtualModel({ id: "Bad ID", default: { backendId: "b", model: "m" } }) === null, "vm: bad id dropped");
+  assert(normalizeVirtualModel({ id: "", default: { backendId: "b", model: "m" } }) === null, "vm: empty id dropped");
+  // missing default → whole VM dropped
+  assert(normalizeVirtualModel({ id: "vm2" }) === null, "vm: missing default drops whole VM");
+  assert(normalizeVirtualModel({ id: "vm2", default: { backendId: "b" } }) === null, "vm: default missing model drops VM");
+  // rule with unknown `when` dropped; keyword with empty keywords dropped; longContext clamped
+  const messy = normalizeVirtualModel({
+    id: "messy", default: { backendId: "b", model: "m" },
+    rules: [
+      { when: "bogus", backendId: "b", model: "m" },                       // dropped: unknown when
+      { when: "keyword", backendId: "b", model: "m", keywords: [] },      // dropped: no keywords
+      { when: "keyword", backendId: "b", model: "m", keywords: ["Hi"] },  // kept + lowercased
+      { when: "longContext", backendId: "b", model: "m", thresholdTokens: -5 },   // clamped to 1
+      { when: "longContext", backendId: "b", model: "m", thresholdTokens: 99_999_999 }, // clamped to 10_000_000
+      { when: "hasImage", backendId: "", model: "m" },                    // dropped: empty backendId
+    ],
+  });
+  assert(messy.rules.length === 3, "vm: 3 of 6 rules survive normalization");
+  assert(messy.rules[0].keywords[0] === "hi", "vm: keywords lowercased");
+  assert(messy.rules[1].thresholdTokens === 1, "vm: longContext threshold clamped to min 1");
+  assert(messy.rules[2].thresholdTokens === 10_000_000, "vm: longContext threshold clamped to max");
+  // normalizeVirtualModels filters nulls
+  assert(normalizeVirtualModels([{ id: "ok", default: { backendId: "b", model: "m" } }, { id: "Bad" }]).length === 1, "vm: list filters dropped entries");
+  // generated ids remain valid even when a 32-char slug needs a numeric suffix
+  const generatedId = suggestVirtualModelId("a".repeat(40), { backends: [{ id: "a".repeat(32) }], virtualModels: [] });
+  assert(ID_RE.test(generatedId) && generatedId.length <= 32 && generatedId.endsWith("-2"), "vm: generated collision id stays within ID_RE length");
+
+  // (8.2) Condition predicates --------------------------------------------------
+  const imgBody = { messages: [{ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image", source: { type: "base64" } }] }] };
+  const txtBody = { messages: [{ role: "user", content: "hello" }] };
+  assert(bodyHasImage(imgBody) === true, "pred: hasImage true for image block");
+  assert(bodyHasImage(txtBody) === false, "pred: hasImage false for text-only");
+  assert(bodyHasImage(null) === false, "pred: hasImage false for body=null");
+  assert(bodyHasWebSearchTool({ tools: [{ name: "web_search" }] }) === true, "pred: webSearch true for name web_search");
+  assert(bodyHasWebSearchTool({ tools: [{ type: "web_search_20250305" }] }) === true, "pred: webSearch true for server-tool type");
+  assert(bodyHasWebSearchTool({ tools: [{ name: "get_weather" }] }) === false, "pred: webSearch false for unrelated tool");
+  assert(bodyHasWebSearchTool({ tools: [{ name: "WebSearcher" }] }) === true, "pred: webSearch true for case-insensitive substring");
+  const metaBody = { metadata: { web_search: true }, messages: [] };
+  assert(ruleMatches({ when: "webSearch" }, metaBody) === true, "pred: webSearch true via metadata flag");
+  assert(ruleMatches({ when: "webSearch" }, { messages: [] }) === false, "pred: webSearch false without flag/tool");
+  // estimateInputTokens: monotonic; body=null → 0; image adds the constant
+  assert(estimateInputTokens(null) === 0, "pred: tokens 0 for body=null");
+  const small = { system: "abc", messages: [{ role: "user", content: "def" }] }; // 6 chars → 2 tokens
+  const big = { system: "x".repeat(500), messages: [{ role: "user", content: "y".repeat(500) }] };
+  assert(estimateInputTokens(small) < 100, "pred: small body under 100 tokens");
+  assert(estimateInputTokens(big) > 100, "pred: big body over 100 tokens (monotonic)");
+  assert(estimateInputTokens(big) > estimateInputTokens(small), "pred: tokens monotonic in text length");
+  const withImg = { messages: [{ role: "user", content: [{ type: "image", source: {} }] }] };
+  assert(estimateInputTokens(withImg) === 400, "pred: image block adds 1600 chars / 4 = 400 tokens");
+  // ruleKeywordMatch: substring, case-insensitive
+  const kwBody = { messages: [{ role: "user", content: "Tell me the LATEST news" }] };
+  assert(ruleKeywordMatch({ keywords: ["latest"] }, kwBody) === true, "pred: keyword hits case-insensitive substring");
+  assert(ruleKeywordMatch({ keywords: ["today"] }, kwBody) === false, "pred: keyword misses cleanly");
+  assert(ruleKeywordMatch({ keywords: [] }, kwBody) === false, "pred: empty keyword list never matches");
+  assert(ruleMatches({ when: "always" }, null) === true, "pred: always true even for body=null");
+
+  // (8.3) Resolution precedence -------------------------------------------------
+  const cfg = {
+    backends: [
+      { id: "claude", format: "anthropic", modelPatterns: ["opus"], enabled: true },
+      { id: "glm",    format: "openai",    modelPatterns: ["glm-*"], enabled: true },
+      { id: "gemini", format: "openai",    modelPatterns: ["gemini-*"], enabled: true },
+      { id: "codex",  format: "openai",    modelPatterns: ["gpt-*"], enabled: true },
+    ],
+    routes: [{ pattern: "*", backendId: "codex" }],
+    virtualModels: [{
+      id: "fusion-smart", enabled: true, match: ["fusion-smart", "fusion-*"], default: { backendId: "codex", model: "gpt-5.5" },
+      rules: [
+        { when: "hasImage",    backendId: "claude", model: "claude-opus-4-8" },
+        { when: "webSearch",   backendId: "glm",    model: "glm-5.2" },
+        { when: "longContext", backendId: "gemini", model: "gemini-2.5-pro", thresholdTokens: 200000 },
+      ],
+    }],
+  };
+  // image → A (claude)
+  let t = evaluateVirtualModel(resolveVirtualModel(cfg, "fusion-smart"), imgBody, cfg);
+  assert(t.matchedRule === "hasImage" && t.backendId === "claude" && t.model === "claude-opus-4-8", "res: image → claude/opus");
+  // web-search-tool → B (glm)
+  t = evaluateVirtualModel(resolveVirtualModel(cfg, "fusion-smart"), { tools: [{ name: "web_search" }], messages: [] }, cfg);
+  assert(t.matchedRule === "webSearch" && t.backendId === "glm", "res: webSearch → glm");
+  // 300k-token body → C (gemini)
+  const huge = { messages: [{ role: "user", content: "z".repeat(1_200_000) }] }; // 300k tokens
+  t = evaluateVirtualModel(resolveVirtualModel(cfg, "fusion-smart"), huge, cfg);
+  assert(t.matchedRule === "longContext" && t.backendId === "gemini", "res: longContext → gemini");
+  // plain short text → D (codex default)
+  t = evaluateVirtualModel(resolveVirtualModel(cfg, "fusion-smart"), txtBody, cfg);
+  assert(t.matchedRule === "default" && t.backendId === "codex" && t.model === "gpt-5.5", "res: plain → default codex");
+  // first-match wins: a body that is BOTH image and long-context, with hasImage first → A
+  const imgAndHuge = { messages: [{ role: "user", content: [{ type: "image", source: {} }, { type: "text", text: "z".repeat(1_200_000) }] }] };
+  t = evaluateVirtualModel(resolveVirtualModel(cfg, "fusion-smart"), imgAndHuge, cfg);
+  assert(t.matchedRule === "hasImage", "res: first-match wins (hasImage before longContext)");
+  // resolveVirtualModel: null when empty; glob match; null for unrelated
+  assert(resolveVirtualModel({ backends: [], routes: [], virtualModels: [] }, "fusion-smart") === null, "res: null when virtualModels empty");
+  assert(resolveVirtualModel(cfg, "fusion-fast") && resolveVirtualModel(cfg, "fusion-fast").id === "fusion-smart", "res: glob fusion-* matches");
+  assert(resolveVirtualModel(cfg, "gpt-5.5") === null, "res: non-VM model returns null");
+  assert(resolveVirtualModel(cfg, null) === null, "res: null model returns null");
+  // disabled VM is invisible
+  const cfgDisabled = JSON.parse(JSON.stringify(cfg));
+  cfgDisabled.virtualModels[0].enabled = false;
+  assert(resolveVirtualModel(cfgDisabled, "fusion-smart") === null, "res: disabled VM treated as absent");
+  // exact VM aliases that shadow real route/model names are rejected at write-validation time
+  const cfgExactCollision = JSON.parse(JSON.stringify(cfg));
+  cfgExactCollision.routes.unshift({ pattern: "claude-opus-4-8", backendId: "claude" });
+  assert(exactRouteOrPatternCollision("claude-opus-4-8", cfgExactCollision, "fusion-smart").includes("route pattern"), "res: exact alias collision detects real route/model names");
+  let collisionRejected = false;
+  try { validateVirtualModelBackends({ id: "newvm", match: ["claude-opus-4-8"], rules: [], default: { backendId: "codex", model: "gpt-5.5" } }, cfgExactCollision); } catch (e) { collisionRejected = e.status === 409; }
+  assert(collisionRejected, "res: validate rejects VM match alias that collides with a real model route");
+
+  // Dangling backendId in a matched rule → proxy-style lookup falls back to
+  // resolveBackendCfg(routeModel). Reproduce the exact proxy() backend-selection logic.
+  const cfgDangling = {
+    backends: [{ id: "codex", format: "openai", modelPatterns: ["gpt-*"], enabled: true }],
+    routes: [{ pattern: "*", backendId: "codex" }],
+    virtualModels: [{
+      id: "fusion-smart", enabled: true, match: ["fusion-*"], default: { backendId: "codex", model: "gpt-5.5" },
+      rules: [{ when: "hasImage", backendId: "ghost", model: "claude-opus-4-8" }], // ghost does not exist
+    }],
+  };
+  const vmD = resolveVirtualModel(cfgDangling, "fusion-smart");
+  const targetD = evaluateVirtualModel(vmD, imgBody, cfgDangling);
+  assert(targetD.backendId === "ghost", "res: dangling rule still resolves to its target");
+  // mirror: cfg.backends.find(enabled by id) || resolveBackendCfg(cfg, routeModel)
+  const fallbackBackend = (cfgDangling.backends.find((b) => b.id === targetD.backendId && b.enabled !== false) || resolveBackendCfg(cfgDangling, targetD.model));
+  assert(fallbackBackend && fallbackBackend.id === "codex", "res: dangling backend falls back to resolveBackendCfg(routeModel)");
+  // req._virtualModel is set with the original alias + matched rule (mirror proxy)
+  const req = { _virtualModel: { id: vmD.id, requested: "fusion-smart", target: targetD, rule: targetD.matchedRule } };
+  assert(req._virtualModel.id === "fusion-smart" && req._virtualModel.rule === "hasImage", "res: _virtualModel carries alias + matched rule");
+
+  // (8.4) Non-regression --------------------------------------------------------
+  // loadConfig on a config WITHOUT virtualModels yields cfg.virtualModels === []
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-vm-"));
+  try {
+    const cfgFile = path.join(tmpDir, "backends.json");
+    fs.writeFileSync(cfgFile, JSON.stringify({
+      backends: [{ id: "codex", format: "openai", modelPatterns: ["gpt-*"], apiKey: "k" }],
+      routes: [{ pattern: "*", backendId: "codex" }],
+      // NOTE: no virtualModels key
+    }), { mode: 0o600 });
+    const loaded = loadConfig(cfgFile);
+    assert(Array.isArray(loaded.virtualModels) && loaded.virtualModels.length === 0, "non-reg: missing virtualModels key → []");
+    // resolveBackendCfg results identical to pre-feature behaviour
+    assert(resolveBackendCfg(loaded, "gpt-5.5").id === "codex", "non-reg: routing still resolves gpt-5.5 → codex");
+    assert(resolveVirtualModel(loaded, "gpt-5.5") === null, "non-reg: no VM match for real model");
+    // empty file → synth, which also carries virtualModels: []
+    const emptyFile = path.join(tmpDir, "empty.json");
+    fs.writeFileSync(emptyFile, "", { mode: 0o600 });
+    const synth = loadConfig(emptyFile);
+    assert(Array.isArray(synth.virtualModels) && synth.virtualModels.length === 0, "non-reg: synth config has virtualModels: []");
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+  // synthesizeFromEnv() includes virtualModels: [] (current-process branch)
+  assert(Array.isArray(synthesizeFromEnv().virtualModels) && synthesizeFromEnv().virtualModels.length === 0, "non-reg: synthesizeFromEnv has virtualModels: []");
+  // With virtualModels present, a non-matching model still routes through the normal path byte-identically
+  assert(resolveBackendCfg(cfg, "gpt-5.5").id === "codex", "non-reg: VMs present don't disturb real-model routing");
+
+  console.log("selftest OK (virtual-models)");
+}
+
 // --- --checkbackends (live network pings, no listener) --------------------------
 async function checkBackends() {
   const cfg = loadConfig();
@@ -4220,7 +4731,8 @@ if (process.argv.includes("--selftest")) {
     await selftestMultiBackend();
     await selftestCodexResponses();
     selftestRequestLog();
-    console.log("selftest OK (account-pool + multi-backend + codex/responses + request-inspector)");
+    selftestVirtualModels();
+    console.log("selftest OK (account-pool + multi-backend + codex/responses + request-inspector + virtual-models)");
   })();
 } else if (process.argv.includes("--checkbackends")) {
   checkBackends();

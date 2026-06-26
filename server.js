@@ -30,6 +30,19 @@ const net = require("net");
 const tls = require("tls");
 const { spawn } = require("child_process");
 
+// --- crash guard ----------------------------------------------------------------
+// A localhost proxy serving multiple concurrent Claude Code sessions must NEVER hard-
+// crash from a single bad request: a crash aborts EVERY in-flight stream at once, so
+// every session sees a truncated response ("API Error: Failed to parse JSON"). The
+// usual culprits are async stream 'error' events (EPIPE/ECONNRESET on curl stdin or a
+// client socket) that have no listener. Log and keep running instead of exiting.
+process.on("uncaughtException", (err) => {
+  try { process.stderr.write(`[claude-router] uncaughtException (survived): ${err && err.stack || err}\n`); } catch {}
+});
+process.on("unhandledRejection", (reason) => {
+  try { process.stderr.write(`[claude-router] unhandledRejection (survived): ${reason && reason.stack || reason}\n`); } catch {}
+});
+
 // --- constants (reverse-engineered from Claude Code; verified 2026-06-24) --------
 const EXPLICIT_PORT = process.env.CLAUDE_ROUTER_PORT || process.env.PORT || "";
 const PORT = Number(EXPLICIT_PORT || 8123); // 8787 falls in a Windows excluded range; 8123 is clear
@@ -693,6 +706,12 @@ function curlFetch(url, { method = "GET", headers = {}, body } = {}) {
     let child;
     try { child = spawn("curl", args, { windowsHide: true }); }
     catch (e) { return reject(new Error("curl spawn failed: " + e.message)); }
+    // CRITICAL: curl can close stdin before reading the whole body (connection failure,
+    // early error response). That makes child.stdin emit an ASYNC 'error' event (EPIPE) —
+    // with no listener, Node throws it as an uncaught exception and the ENTIRE router
+    // process crashes, aborting every in-flight stream (→ "Failed to parse JSON" for all
+    // concurrent Claude Code sessions). Swallow it; the request fails cleanly on its own.
+    if (child.stdin) child.stdin.on("error", () => {});
     if (bodyBuf) { try { child.stdin.write(bodyBuf); child.stdin.end(); } catch (e) { /* EPIPE if curl exits early */ } }
     else { try { child.stdin.end(); } catch {} }
     let prelude = Buffer.alloc(0);
@@ -2181,12 +2200,12 @@ async function openaiResponsesTranslate(req, res, backend, body) {
     up = await anthropicFetch(upstream, { method: "POST", headers, body: JSON.stringify(rBody) });
   } catch (e) {
     markLogFinished(res, logId, { status: "error", errorPreview: `${backend.id}: ${String(e)}` });
-    return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
+    return sendProxyError(res, 502, `${backend.id}: ${String(e)}`, "proxy_error", isStream);
   }
   if (!up.ok) {
     const text = await up.text();
     markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: `upstream ${up.status}: ${text.slice(0, 300)}` });
-    return sendJson(res, up.status, { error: { type: "api_error", message: `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}` } });
+    return sendProxyError(res, up.status, `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}`, (up.status === 429 ? "rate_limit_error" : "api_error"), isStream);
   }
 
   const reader = up.body.getReader();
@@ -2256,12 +2275,12 @@ async function openaiTranslate(req, res, backend, body) {
     up = await throttledBackendFetch(backend, () => fetch(url, { method: "POST", headers, body: JSON.stringify(oaiBody) }));
   } catch (e) {
     markLogFinished(res, logId, { status: "error", errorPreview: `${backend.id}: ${String(e)}` });
-    return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
+    return sendProxyError(res, 502, `${backend.id}: ${String(e)}`, "proxy_error", isStream);
   }
   if (!up.ok) {
     const text = await up.text();
     markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: `upstream ${up.status}: ${text.slice(0, 300)}` });
-    return sendJson(res, up.status, { error: { type: "api_error", message: `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}` } });
+    return sendProxyError(res, up.status, `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}`, (up.status === 429 ? "rate_limit_error" : "api_error"), isStream);
   }
 
   if (isStream) {
@@ -2932,6 +2951,22 @@ function extractUpstreamErrorMessage(text) {
     if (o && o.code) return o.code + (o.message ? ": " + o.message : "");
     return jsonStr.slice(0, 400);
   } catch { return t.slice(0, 400); }
+}
+
+// Send an error to the client in the shape its client expects. A STREAMING client
+// (Anthropic SDK) on a non-2xx reads the body as text and JSON.parse()s it — so it must
+// get either a clean JSON error (non-stream) or a 200 + SSE `event: error` frame
+// (stream). Never hand a streaming client a non-2xx with a non-JSON/SSE-shaped body.
+function sendProxyError(res, status, message, errType, isStream) {
+  if (res.headersSent) { try { res.end(); } catch {} return; }
+  const errObj = { type: "error", error: { type: errType || "api_error", message: String(message).slice(0, 600) } };
+  if (isStream) {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" });
+    res.write(`event: error\ndata: ${JSON.stringify(errObj)}\n\n`);
+    res.end();
+  } else {
+    sendJson(res, status, errObj);
+  }
 }
 
 async function streamUpstream(res, up, log) {

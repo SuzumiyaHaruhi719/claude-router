@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="midnight">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,13 +7,18 @@
 <style>
   :root {
     color-scheme: dark;
+    /* deep base + translucent glass surfaces (Apple-modern / macOS Sonoma) */
     --bg: #0b0d12;
     --bg-2: #10131a;
-    --surface: #151922;
-    --surface-2: #1b2230;
-    --surface-3: #222a38;
-    --line: #2d3748;
-    --line-strong: #3f4d63;
+    --sidebar-bg: rgba(10, 12, 18, 0.62);
+    --surface: rgba(21, 25, 34, 0.60);
+    --surface-solid: #151922;
+    --surface-2: rgba(31, 38, 52, 0.55);
+    --surface-3: rgba(40, 49, 66, 0.55);
+    --glass-bg: rgba(21, 25, 34, 0.60);
+    --glass-strong: rgba(17, 21, 30, 0.78);
+    --line: rgba(255, 255, 255, 0.08);
+    --line-strong: rgba(255, 255, 255, 0.16);
     --text: #edf2ff;
     --muted: #aab6c7;
     --subtle: #7e8aa0;
@@ -24,37 +29,148 @@
     --warning: #fbbf24;
     --danger: #fb7185;
     --danger-ink: #21050a;
-    --shadow: 0 16px 40px rgba(0, 0, 0, .32);
+    /* soft layered shadows — never harsh */
+    --shadow: 0 8px 32px rgba(0, 0, 0, 0.28), 0 1px 2px rgba(0, 0, 0, 0.20);
+    --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.16);
     --ring: 0 0 0 3px rgba(76, 201, 240, .28);
-    --radius: 8px;
-    --radius-sm: 6px;
-    --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
-    --dur: 180ms;
-    --ease: cubic-bezier(.2, .8, .2, 1);
+    --blur: blur(20px) saturate(180%);
+    --radius: 16px;        /* cards */
+    --radius-sm: 10px;     /* buttons */
+    --radius-modal: 12px;  /* modals */
+    --radius-pill: 999px;  /* pills */
+    --sidebar-w: 240px;
+    --sidebar-w-collapsed: 68px;
+    --topbar-h: 62px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, Roboto, sans-serif;
+    --mono: "SF Mono", "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    --dur: 200ms;
+    --ease: cubic-bezier(.22, 1, .36, 1);
+    --grad: linear-gradient(135deg, #4cc9f0, #a78bfa);
+    /* code/trace/error surfaces — theme-aware so they're not black in light themes */
+    --code-bg: #07090d;
+    --code-fg: #dbeafe;
+    --scrollbar-thumb: rgba(255,255,255,0.18);
+    --scrollbar-thumb-hover: rgba(255,255,255,0.30);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(76, 201, 240, 0.12), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 85% 5%, rgba(167, 139, 250, 0.10), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 50% 100%, rgba(99, 230, 190, 0.06), transparent 60%),
+      #0b0d12;
   }
 
-  [data-theme="light"] {
+  /* ===== 6 switchable themes (accent-driven) ===== */
+  /* 石墨 Graphite — pure-black neutral + warm orange */
+  [data-theme="graphite"] {
+    color-scheme: dark;
+    --bg: #0a0a0b; --bg-2: #101012;
+    --sidebar-bg: rgba(9,9,11,0.66); --surface: rgba(24,24,27,0.62); --surface-solid:#18181b;
+    --surface-2: rgba(39,39,42,0.55); --surface-3: rgba(52,52,56,0.55);
+    --glass-bg: rgba(24,24,27,0.62); --glass-strong: rgba(15,15,17,0.80);
+    --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
+    --text:#f4f4f5; --muted:#a1a1aa; --subtle:#71717a;
+    --primary:#f97316; --primary-ink:#1a0c00; --accent:#fb923c;
+    --ring: 0 0 0 3px rgba(249,115,22,.30);
+    --grad: linear-gradient(135deg,#f97316,#fbbf24);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(249,115,22,0.12), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 85% 5%, rgba(251,146,60,0.08), transparent 60%),
+      #0a0a0b;
+  }
+  /* 午夜 Midnight — deeper blue UI, cool indigo accent */
+  [data-theme="midnight"] {
+    color-scheme: dark;
+    --bg:#070a16; --bg-2:#0a0e1f;
+    --sidebar-bg: rgba(6,9,20,0.66); --surface: rgba(17,22,44,0.60); --surface-solid:#11162c;
+    --surface-2: rgba(26,33,64,0.55); --surface-3: rgba(34,43,82,0.55);
+    --glass-bg: rgba(17,22,44,0.60); --glass-strong: rgba(11,15,32,0.80);
+    --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
+    --text:#e6ecff; --muted:#9fb0d6; --subtle:#6f80aa;
+    --primary:#818cf8; --primary-ink:#0a0820; --accent:#c4b5fd;
+    --ring: 0 0 0 3px rgba(129,140,248,.30);
+    --grad: linear-gradient(135deg,#818cf8,#c4b5fd);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(99,102,241,0.16), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 85% 5%, rgba(168,85,247,0.12), transparent 60%),
+      #070a16;
+  }
+  /* 终端 Terminal — near-black + phosphor green */
+  [data-theme="terminal"] {
+    color-scheme: dark;
+    --bg:#080a09; --bg-2:#0c0f0d;
+    --sidebar-bg: rgba(7,9,8,0.66); --surface: rgba(18,24,20,0.62); --surface-solid:#121814;
+    --surface-2: rgba(26,34,28,0.55); --surface-3: rgba(34,46,38,0.55);
+    --glass-bg: rgba(18,24,20,0.62); --glass-strong: rgba(11,15,12,0.82);
+    --line: rgba(120,255,170,0.10); --line-strong: rgba(120,255,170,0.20);
+    --text:#dcffe9; --muted:#86c79b; --subtle:#5e8a6e;
+    --primary:#4ade80; --primary-ink:#021206; --accent:#86efac;
+    --ring: 0 0 0 3px rgba(74,222,128,.30);
+    --grad: linear-gradient(135deg,#4ade80,#a3e635);
+    --font: var(--mono-stack, "SF Mono","Cascadia Mono",Consolas,monospace);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(74,222,128,0.12), transparent 60%),
+      radial-gradient(ellipse 60% 50% at 90% 100%, rgba(132,204,22,0.08), transparent 60%),
+      #080a09;
+  }
+  /* 赛博朋克 Cyberpunk — black · yellow · blue */
+  [data-theme="cyberpunk"] {
+    color-scheme: dark;
+    --bg:#0c0c07; --bg-2:#11110a;
+    --sidebar-bg: rgba(11,11,6,0.68); --surface: rgba(24,24,14,0.60); --surface-solid:#18180e;
+    --surface-2: rgba(38,38,20,0.55); --surface-3: rgba(52,52,28,0.52);
+    --glass-bg: rgba(24,24,14,0.60); --glass-strong: rgba(15,15,8,0.82);
+    --line: rgba(253,224,71,0.12); --line-strong: rgba(253,224,71,0.24);
+    --text:#fdf6d3; --muted:#cbb86a; --subtle:#9a8a44;
+    --primary:#fde047; --primary-ink:#1a1500; --accent:#3b82f6;
+    --ring: 0 0 0 3px rgba(253,224,71,.32);
+    --grad: linear-gradient(135deg,#fde047,#3b82f6);
+    --mesh:
+      radial-gradient(ellipse 75% 55% at 12% 0%, rgba(253,224,71,0.14), transparent 58%),
+      radial-gradient(ellipse 70% 55% at 88% 8%, rgba(59,130,246,0.16), transparent 60%),
+      #0c0c07;
+  }
+  /* 瓷白 Porcelain — high-contrast light + light blue */
+  [data-theme="porcelain"] {
     color-scheme: light;
-    --bg: #f5f7fb;
-    --bg-2: #eef2f7;
-    --surface: #ffffff;
-    --surface-2: #f8fafc;
-    --surface-3: #eef4fa;
-    --line: #cfd8e6;
-    --line-strong: #a8b5c8;
-    --text: #111827;
-    --muted: #46556a;
-    --subtle: #66758b;
-    --primary: #0077b6;
-    --primary-ink: #ffffff;
-    --accent: #6d28d9;
-    --success: #047857;
-    --warning: #a16207;
-    --danger: #be123c;
-    --danger-ink: #ffffff;
-    --shadow: 0 16px 36px rgba(20, 32, 48, .14);
-    --ring: 0 0 0 3px rgba(0, 119, 182, .25);
+    --bg:#eef2f8; --bg-2:#e6ebf3;
+    --sidebar-bg: rgba(255,255,255,0.66); --surface: rgba(255,255,255,0.72); --surface-solid:#ffffff;
+    --surface-2: rgba(241,245,250,0.78); --surface-3: rgba(228,235,244,0.80);
+    --glass-bg: rgba(255,255,255,0.72); --glass-strong: rgba(255,255,255,0.88);
+    --line: rgba(15,23,42,0.10); --line-strong: rgba(15,23,42,0.20);
+    --text:#0f172a; --muted:#475569; --subtle:#64748b;
+    --primary:#0284c7; --primary-ink:#ffffff; --accent:#0ea5e9;
+    --success:#059669; --warning:#b45309; --danger:#dc2626;
+    --shadow: 0 8px 28px rgba(15,23,42,0.10), 0 1px 2px rgba(15,23,42,0.06);
+    --shadow-sm: 0 4px 14px rgba(15,23,42,0.06);
+    --ring: 0 0 0 3px rgba(2,132,199,.25);
+    --code-bg: #e7edf5; --code-fg: #0f172a;
+    --scrollbar-thumb: rgba(15,23,42,0.22); --scrollbar-thumb-hover: rgba(15,23,42,0.38);
+    --grad: linear-gradient(135deg,#0284c7,#38bdf8);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(2,132,199,0.10), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 85% 5%, rgba(14,165,233,0.08), transparent 60%),
+      #eef2f8;
+  }
+  /* 砂岩 Sandstone — warm light tone */
+  [data-theme="sandstone"] {
+    color-scheme: light;
+    --bg:#f3ede2; --bg-2:#ece4d6;
+    --sidebar-bg: rgba(250,246,239,0.70); --surface: rgba(252,249,244,0.74); --surface-solid:#fcf9f4;
+    --surface-2: rgba(244,237,226,0.80); --surface-3: rgba(235,225,209,0.82);
+    --glass-bg: rgba(252,249,244,0.74); --glass-strong: rgba(250,246,239,0.90);
+    --line: rgba(68,46,20,0.12); --line-strong: rgba(68,46,20,0.22);
+    --text:#292524; --muted:#6b5d4f; --subtle:#8a7a68;
+    --primary:#c2410c; --primary-ink:#fff6f0; --accent:#ea580c;
+    --success:#15803d; --warning:#a16207; --danger:#b91c1c;
+    --shadow: 0 8px 28px rgba(68,46,20,0.10), 0 1px 2px rgba(68,46,20,0.06);
+    --shadow-sm: 0 4px 14px rgba(68,46,20,0.06);
+    --ring: 0 0 0 3px rgba(194,65,12,.24);
+    --code-bg: #ece3d5; --code-fg: #292524;
+    --scrollbar-thumb: rgba(68,46,20,0.22); --scrollbar-thumb-hover: rgba(68,46,20,0.40);
+    --grad: linear-gradient(135deg,#c2410c,#f59e0b);
+    --mesh:
+      radial-gradient(ellipse 80% 60% at 15% 0%, rgba(194,65,12,0.08), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 85% 5%, rgba(245,158,11,0.10), transparent 60%),
+      #f3ede2;
   }
 
   * { box-sizing: border-box; }
@@ -62,14 +178,27 @@
   body {
     margin: 0;
     min-height: 100dvh;
-    background:
-      radial-gradient(circle at 18% -10%, rgba(76, 201, 240, .16), transparent 34rem),
-      radial-gradient(circle at 86% 0%, rgba(167, 139, 250, .14), transparent 30rem),
-      linear-gradient(180deg, var(--bg), var(--bg-2));
+    /* mesh gradient: soft organic color blobs over a deep base (theme-driven) */
+    background: var(--mesh);
+    background-attachment: fixed;
     color: var(--text);
     font: 14px/1.5 var(--font);
     letter-spacing: 0;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
+  /* custom scrollbars — replace the ugly native ones, theme-aware */
+  * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: padding-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
   a { color: var(--primary); text-decoration: none; }
   a:hover { text-decoration: underline; }
   button, input, select, textarea { font: inherit; }
@@ -81,24 +210,28 @@
     gap: 8px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    padding: 0 12px;
+    padding: 0 14px;
     background: var(--surface-2);
     color: var(--text);
+    font-weight: 600;
     cursor: pointer;
     text-decoration: none;
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), opacity var(--dur) var(--ease);
     touch-action: manipulation;
   }
-  button:hover, .button:hover { background: var(--surface-3); text-decoration: none; }
+  button:hover, .button:hover { background: var(--surface-3); border-color: rgba(255,255,255,0.22); text-decoration: none; }
   button:active, .button:active { transform: translateY(1px); }
   button:disabled, .button[aria-disabled="true"] { cursor: not-allowed; opacity: .52; transform: none; }
   .primary {
-    background: var(--primary);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--primary), white 4%), color-mix(in srgb, var(--primary), #7ec8ff 18%));
     border-color: transparent;
     color: var(--primary-ink);
     font-weight: 700;
+    box-shadow: 0 4px 14px rgba(76, 201, 240, 0.22);
   }
-  .primary:hover { background: color-mix(in srgb, var(--primary), white 10%); }
+  .primary:hover { background: linear-gradient(135deg, color-mix(in srgb, var(--primary), white 12%), var(--primary)); }
   .danger {
     background: color-mix(in srgb, var(--danger), transparent 84%);
     border-color: color-mix(in srgb, var(--danger), transparent 42%);
@@ -116,7 +249,7 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     padding: 9px 11px;
-    background: color-mix(in srgb, var(--surface-2), var(--bg) 18%);
+    background: rgba(8, 10, 16, 0.45);
     color: var(--text);
     transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
@@ -132,10 +265,18 @@
   code, .mono {
     font-family: var(--mono);
     font-size: 12px;
-    background: color-mix(in srgb, var(--surface-3), transparent 30%);
+    background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--line);
-    border-radius: 5px;
-    padding: 2px 5px;
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  /* Apple-modern gradient text for big numbers / headings */
+  .grad-text {
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
   }
   pre {
     margin: 0;
@@ -170,48 +311,149 @@
   }
   .skip-link:focus { transform: translateY(0); }
 
-  .shell { max-width: 1480px; margin: 0 auto; padding: 16px; }
+  /* ===== App shell: fixed sidebar + topbar + scrollable content ===== */
+  .app {
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    grid-template-rows: var(--topbar-h) 1fr;
+    grid-template-areas:
+      "sidebar topbar"
+      "sidebar content";
+  }
+
   .topbar {
+    grid-area: topbar;
     position: sticky;
     top: 0;
-    z-index: 20;
-    border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--bg), transparent 9%);
-    backdrop-filter: blur(16px);
-  }
-  .topbar-inner {
-    max-width: 1480px;
-    margin: 0 auto;
-    padding: 12px 16px;
-    display: grid;
-    grid-template-columns: 1fr;
+    z-index: 30;
+    display: flex;
+    align-items: center;
     gap: 12px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--glass-strong);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
-  .brand-row, .control-row, .row {
+  .topbar-title { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
+  .topbar-title h1 { margin: 0; font-size: 16px; line-height: 1.2; font-weight: 700; }
+  .topbar-title .subtitle { margin: 1px 0 0; color: var(--subtle); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62ch; }
+  .control-row, .row {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
   }
-  .brand-row { justify-content: space-between; }
+
+  /* ===== Sidebar ===== */
+  .sidebar {
+    grid-area: sidebar;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 12px;
+    border-right: 1px solid var(--line);
+    background: var(--sidebar-bg);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    z-index: 40;
+  }
   .brand {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 11px;
     min-width: 0;
+    padding: 4px 6px 14px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--line);
   }
   .brand-mark {
-    width: 40px;
-    height: 40px;
-    border: 1px solid color-mix(in srgb, var(--primary), transparent 40%);
-    border-radius: 8px;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 11px;
     display: grid;
     place-items: center;
-    background: linear-gradient(135deg, color-mix(in srgb, var(--primary), transparent 82%), color-mix(in srgb, var(--accent), transparent 82%));
-    color: var(--primary);
+    background: var(--grad);
+    color: #04121a;
+    box-shadow: 0 6px 18px rgba(76, 201, 240, 0.25);
   }
-  h1 { margin: 0; font-size: clamp(20px, 3vw, 28px); line-height: 1.1; }
-  .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .brand-text { min-width: 0; }
+  .brand-text strong { display: block; font-size: 14px; line-height: 1.2; letter-spacing: .01em; }
+  .brand-text span { display: block; color: var(--subtle); font-size: 11px; }
+  .nav { display: flex; flex-direction: column; gap: 4px; }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+    position: relative;
+    transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+  }
+  .nav-item svg { width: 18px; height: 18px; flex: 0 0 auto; }
+  .nav-item:hover { background: color-mix(in srgb, var(--surface-2), transparent 30%); color: var(--text); }
+  .nav-item[aria-current="page"] {
+    background: linear-gradient(135deg, rgba(76, 201, 240, 0.16), rgba(167, 139, 250, 0.12));
+    border-color: rgba(255, 255, 255, 0.10);
+    color: var(--text);
+  }
+  .nav-item[aria-current="page"] svg { color: var(--primary); }
+  .nav-item[aria-current="page"]::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 9px;
+    bottom: 9px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--grad);
+  }
+  .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-foot { margin-top: auto; display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .theme-picker { display: flex; align-items: center; gap: 8px; }
+  .theme-picker .theme-ico { width: 16px; height: 16px; color: var(--muted); flex: 0 0 auto; }
+  .theme-picker select { min-height: 38px; padding: 6px 8px; font-size: 12px; font-weight: 600; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); border: 1px solid var(--line); cursor: pointer; }
+  .sidebar-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* ===== Content area ===== */
+  .content { grid-area: content; min-width: 0; overflow: auto; }
+  .content-inner { max-width: 1280px; margin: 0 auto; padding: 22px 22px 64px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: grid; gap: 18px; }
+  .page-head { display: grid; gap: 4px; margin-bottom: 2px; }
+  .page-head h1 {
+    margin: 0;
+    font-size: 26px;
+    line-height: 1.12;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    width: fit-content;
+  }
+  .page-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 80ch; }
+
+  h1 { margin: 0; }
+  .subtitle { margin: 0; color: var(--muted); font-size: 13px; }
   .badge {
     display: inline-flex;
     align-items: center;
@@ -235,12 +477,12 @@
   .base-url {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    min-width: min(100%, 280px);
+    gap: 6px;
+    min-width: min(40vw, 240px);
     border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--surface), transparent 8%);
-    padding: 4px;
+    border-radius: var(--radius-pill);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 3px 3px 3px 6px;
   }
   .base-url code {
     flex: 1 1 auto;
@@ -252,15 +494,19 @@
     border: 0;
     color: var(--text);
   }
-  .admin-token { min-width: min(100%, 260px); max-width: 360px; }
+  .base-url .icon-only { min-height: 36px; width: 36px; }
+  .admin-token { min-width: min(34vw, 220px); max-width: 300px; }
+  .admin-token input { min-height: 38px; }
+  .topbar .ghost { min-height: 38px; }
   .oauth-line { color: var(--muted); font-size: 13px; }
 
-  main { display: grid; gap: 16px; padding: 16px 0 48px; }
   .section {
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    background: color-mix(in srgb, var(--surface), transparent 4%);
-    box-shadow: var(--shadow);
+    background: var(--glass-bg);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-sm);
   }
   .section-header {
     display: flex;
@@ -284,10 +530,12 @@
   .metric {
     min-height: 96px;
     border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 12px;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2), transparent 4%), color-mix(in srgb, var(--surface), transparent 4%));
+    border-radius: 14px;
+    padding: 13px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
+  .metric:hover { border-color: rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.05); }
   .metric .k { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .metric .v { margin-top: 8px; font: 700 26px/1 var(--mono); color: var(--text); }
   .metric .hint { margin-top: 8px; color: var(--subtle); font-size: 12px; }
@@ -300,6 +548,95 @@
     grid-template-columns: 1fr;
     gap: 12px;
   }
+
+  /* ===== Billing hero (Dashboard) ===== */
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .hero-card {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--glass-bg);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-sm);
+    padding: 20px 22px;
+    display: grid;
+    gap: 6px;
+    align-content: center;
+    min-height: 150px;
+  }
+  .hero-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse 70% 90% at 100% 0%, rgba(76, 201, 240, 0.10), transparent 55%);
+  }
+  .hero-card .hero-ico {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  .hero-card .hero-ico svg { width: 16px; height: 16px; }
+  .hero-num {
+    font: 800 clamp(40px, 7vw, 58px)/1 var(--font);
+    letter-spacing: -0.03em;
+    margin: 2px 0;
+  }
+  .hero-sub { color: var(--subtle); font-size: 13px; }
+  .hero-cost .hero-num { background: linear-gradient(135deg, #63e6be, #4cc9f0); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
+
+  .model-breakdown {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    gap: 10px;
+  }
+  .model-card {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 12px 13px;
+    display: grid;
+    gap: 8px;
+    transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+  }
+  .model-card:hover { border-color: rgba(255,255,255,0.13); background: rgba(255,255,255,0.05); }
+  .model-card .mc-name {
+    font: 700 13px/1.2 var(--mono);
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .model-card .mc-stats { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .model-card .mc-tokens { color: var(--muted); font-size: 13px; }
+  .model-card .mc-tokens strong { color: var(--text); font-weight: 700; }
+  .model-card .mc-cost { font: 700 15px/1 var(--font); color: var(--success); }
+  .mc-bar {
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+  .mc-bar > i {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--grad);
+  }
+  .mc-est { color: var(--subtle); font-size: 11px; }
+  .pool-tokens { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .pool-tokens .tk-out { color: var(--success); }
   .status-list {
     display: grid;
     gap: 8px;
@@ -349,10 +686,12 @@
     display: grid;
     gap: 12px;
     border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2), transparent 8%), color-mix(in srgb, var(--surface), transparent 3%));
-    padding: 12px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 14px;
+    transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
+  .backend-card:hover { border-color: rgba(255, 255, 255, 0.13); background: rgba(255, 255, 255, 0.05); }
   .card-head {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -444,8 +783,8 @@
   .table-shell {
     overflow-x: auto;
     border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--surface-2), transparent 16%);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.02);
   }
   table {
     width: 100%;
@@ -460,8 +799,9 @@
   }
   th {
     color: var(--muted);
-    background: color-mix(in srgb, var(--surface-3), transparent 22%);
+    background: var(--surface-solid);
     font-size: 11px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .05em;
   }
@@ -509,13 +849,9 @@
   .preview {
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    background: #07090d;
-    color: #dbeafe;
+    background: var(--code-bg);
+    color: var(--code-fg);
     padding: 12px;
-  }
-  [data-theme="light"] .preview {
-    background: #0f172a;
-    color: #e5edff;
   }
   .mapper-grid {
     display: grid;
@@ -577,12 +913,11 @@
   .pool-filters span { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .pool-errorlog-wrap { display: grid; gap: 6px; }
   .pool-errorlog-title { margin: 0; font-size: 13px; color: var(--danger); }
-  .pool-errorlog { max-height: 26vh; overflow: auto; border: 1px solid color-mix(in srgb, var(--danger), transparent 60%); border-radius: var(--radius); background: #07090d; }
-  [data-theme="light"] .pool-errorlog { background: #0f172a; }
+  .pool-errorlog { max-height: 26vh; overflow: auto; border: 1px solid color-mix(in srgb, var(--danger), transparent 60%); border-radius: var(--radius); background: var(--code-bg); }
   .err-line { display: grid; gap: 2px; padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--danger), transparent 80%); font-family: var(--mono); font-size: 12px; }
   .err-line:last-child { border-bottom: 0; }
   .err-meta { color: var(--warning); }
-  .err-text { color: #fecaca; white-space: pre-wrap; word-break: break-word; }
+  .err-text { color: var(--danger); white-space: pre-wrap; word-break: break-word; }
   .pool-scroll { max-height: 60vh; overflow: auto; }
   .pool-scroll thead th { position: sticky; top: 0; z-index: 1; }
   .pool-row { cursor: pointer; }
@@ -595,8 +930,7 @@
   .pool-detail-grid { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 4px 14px; font-size: 13px; }
   .pool-detail-grid dt { color: var(--muted); font-weight: 700; }
   .pool-detail-grid dd { margin: 0; font-family: var(--mono); word-break: break-all; }
-  .pool-detail-pre { margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: #07090d; color: #dbeafe; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
-  [data-theme="light"] .pool-detail-pre { background: #0f172a; color: #e5edff; }
+  .pool-detail-pre { margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); color: var(--code-fg); font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
   .pool-empty { padding: 16px; text-align: center; color: var(--subtle); }
   .status-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid var(--line); white-space: nowrap; }
   .status-pill.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning), transparent 45%); background: color-mix(in srgb, var(--warning), transparent 88%); }
@@ -624,7 +958,9 @@
     place-items: start center;
     overflow: auto;
     padding: 20px 12px;
-    background: rgba(2, 6, 14, .68);
+    background: rgba(2, 6, 14, .55);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
   .modal-backdrop[hidden] { display: none; }
   .modal {
@@ -632,8 +968,10 @@
     max-height: calc(100dvh - 40px);
     overflow: auto;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    background: var(--surface);
+    border-radius: var(--radius-modal);
+    background: var(--glass-strong);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     box-shadow: var(--shadow);
   }
   .modal-head {
@@ -646,7 +984,9 @@
     align-items: center;
     padding: 14px;
     border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface), transparent 3%);
+    background: var(--glass-strong);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   .modal-body { padding: 14px; display: grid; gap: 12px; }
   .form-grid {
@@ -692,8 +1032,10 @@
     z-index: 120;
     width: min(420px, calc(100vw - 32px));
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    background: var(--surface);
+    border-radius: var(--radius-modal);
+    background: var(--glass-strong);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     color: var(--text);
     box-shadow: var(--shadow);
     padding: 12px;
@@ -722,9 +1064,9 @@
   .hide { display: none !important; }
 
   @media (min-width: 720px) {
-    .topbar-inner { grid-template-columns: 1fr; }
     .control-row { justify-content: flex-end; }
-    .stats-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .hero-grid { grid-template-columns: 1fr 1fr; }
+    .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .split { grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); }
     .add-row { grid-template-columns: 1fr minmax(220px, .4fr) auto; align-items: end; }
     .profiles-layout { grid-template-columns: minmax(220px, .32fr) minmax(0, 1fr); }
@@ -735,14 +1077,61 @@
     .mapper-preview-grid { grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); }
   }
 
+  @media (min-width: 1180px) {
+    .stats-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  }
+
+  /* Tablet: collapse sidebar to icons only */
+  @media (max-width: 1023px) and (min-width: 721px) {
+    .app { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
+    .sidebar { padding: 14px 8px; align-items: center; }
+    .brand { gap: 0; justify-content: center; padding: 4px 0 14px; }
+    .brand-text { display: none; }
+    .nav-item { justify-content: center; padding: 0; }
+    .nav-label { display: none; }
+    .nav-item[aria-current="page"]::before { left: -8px; }
+    .sidebar-foot, .sidebar-meta { display: none; }
+  }
+
   @media (max-width: 760px) {
     .mapper-row { grid-template-columns: 1fr; }
     .mapper-custom { grid-column: 1; }
   }
 
-  @media (min-width: 1080px) {
-    .topbar-inner { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-    .brand-row { justify-content: flex-start; }
+  /* Mobile: sidebar becomes a bottom tab bar */
+  @media (max-width: 720px) {
+    .app {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: var(--topbar-h) 1fr auto;
+      grid-template-areas: "topbar" "content" "sidebar";
+    }
+    .app { grid-template-rows: auto 1fr auto; }
+    .topbar { position: static; flex-wrap: wrap; height: auto; min-height: var(--topbar-h); padding: 10px 12px; gap: 8px; }
+    .topbar-title { flex: 1 1 100%; }
+    .topbar-title h1 { font-size: 15px; }
+    .control-row { flex: 1 1 100%; }
+    .base-url { flex: 1 1 auto; min-width: 0; }
+    .sidebar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      top: auto;
+      height: auto;
+      flex-direction: row;
+      align-items: stretch;
+      justify-content: space-around;
+      gap: 2px;
+      padding: 6px;
+      border-right: 0;
+      border-top: 1px solid var(--line);
+    }
+    .brand, .sidebar-foot { display: none; }
+    .nav { flex-direction: row; flex: 1; justify-content: space-around; gap: 2px; }
+    .nav-item { flex-direction: column; gap: 3px; min-height: 50px; padding: 4px 2px; font-size: 10px; font-weight: 700; }
+    .nav-item[aria-current="page"]::before { display: none; }
+    .nav-item[aria-current="page"] { color: var(--primary); }
+    .nav-label { display: block; font-size: 10px; }
+    .content-inner { padding: 16px 14px 80px; }
+    .admin-token { max-width: none; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -774,22 +1163,58 @@
   <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M14 8V5H5v14h9v-3M10 12h11M17 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="icon-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 5H5v14h14v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="icon-lock" viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="icon-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6M17.5 19a5.5 5.5 0 0 0-2.2-4.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.6 18H14a3.4 3.4 0 0 0 0-6.8H10A3.4 3.4 0 0 1 10 4.4h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M3 13l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 9.2a2.6 2.6 0 0 1 5 .9c0 1.8-2.5 2-2.5 3.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></symbol>
+  <symbol id="icon-login" viewBox="0 0 24 24"><path d="M10 8V5h9v14h-9v-3M14 12H3M7 8l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-warning" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5H2.5L12 3.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></symbol>
+  <symbol id="icon-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M10.6 6.2A9.7 9.7 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-3.2 3.8M6.5 7.8A16 16 0 0 0 2.5 12s3.5 6 9.5 6a9.4 9.4 0 0 0 3.4-.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.5 9.6a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="icon-coins" viewBox="0 0 24 24"><ellipse cx="9" cy="6.5" rx="5.5" ry="2.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 6.5v4c0 1.4 2.5 2.6 5.5 2.6s5.5-1.2 5.5-2.6v-4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 10.5v4c0 1.4 2.5 2.6 5.5 2.6 1 0 2-.13 2.8-.36" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="16.5" cy="15.5" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16.5 13v5M15 14.2h2a1.1 1.1 0 0 1 0 2.2h-1.6M15 16.4h2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="icon-token" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 9.5h8M12 9.5V16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
 </svg>
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <div class="brand-row">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true"><svg><use href="#icon-router"></use></svg></div>
-        <div>
-          <h1>Claude Router</h1>
-          <p class="subtitle">Localhost control plane for Claude Code backends, routes, profiles, and throttle state.</p>
-        </div>
+<div class="app">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><svg><use href="#icon-router"></use></svg></div>
+      <div class="brand-text">
+        <strong>Claude Router</strong>
+        <span>control plane</span>
       </div>
-      <div class="meta">
+    </div>
+    <nav class="nav" id="tabNav" aria-label="Sections">
+      <button class="nav-item" type="button" data-tab="dashboard" aria-current="page"><svg aria-hidden="true"><use href="#icon-grid"></use></svg><span class="nav-label">Dashboard</span></button>
+      <button class="nav-item" type="button" data-tab="accounts"><svg aria-hidden="true"><use href="#icon-users"></use></svg><span class="nav-label">Accounts</span></button>
+      <button class="nav-item" type="button" data-tab="routing"><svg aria-hidden="true"><use href="#icon-route"></use></svg><span class="nav-label">Routing</span></button>
+      <button class="nav-item" type="button" data-tab="mapper"><svg aria-hidden="true"><use href="#icon-layers"></use></svg><span class="nav-label">Mapper</span></button>
+      <button class="nav-item" type="button" data-tab="help"><svg aria-hidden="true"><use href="#icon-help"></use></svg><span class="nav-label">Help</span></button>
+    </nav>
+    <div class="sidebar-foot">
+      <label class="theme-picker" title="Theme">
+        <span class="sr-only">Theme</span>
+        <svg aria-hidden="true" class="theme-ico"><use href="#icon-layers"></use></svg>
+        <select id="themeSelect" aria-label="Theme">
+          <option value="graphite">石墨 Graphite</option>
+          <option value="midnight">午夜 Midnight</option>
+          <option value="terminal">终端 Terminal</option>
+          <option value="cyberpunk">赛博朋克 Cyberpunk</option>
+          <option value="porcelain">瓷白 Porcelain</option>
+          <option value="sandstone">砂岩 Sandstone</option>
+        </select>
+      </label>
+      <div class="sidebar-meta">
         <span class="badge primary-badge" id="modeBadge">Loading</span>
         <span class="badge" id="pollBadge">Live</span>
       </div>
+    </div>
+  </aside>
+
+  <header class="topbar">
+    <div class="topbar-title">
+      <h1>Claude Router</h1>
+      <p class="subtitle" id="oauthLine" aria-live="polite">Localhost control plane for Claude Code backends, routes, and profiles.</p>
     </div>
     <div class="control-row" aria-label="Router controls">
       <div class="base-url" title="Router base URL">
@@ -801,15 +1226,45 @@
         <input id="adminToken" type="password" autocomplete="off" placeholder="X-Admin-Token if configured" aria-label="Admin token">
       </label>
       <button class="ghost" id="refreshNow" type="button"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg>Refresh</button>
-      <button class="ghost" id="themeToggle" type="button" aria-label="Toggle light and dark theme">Theme: dark</button>
     </div>
-    <div class="oauth-line" id="oauthLine" aria-live="polite">OAuth status loading.</div>
-    <div class="banner load-error" id="loadError" hidden><span class="dot err" aria-hidden="true"></span><div></div></div>
-  </div>
-</header>
+  </header>
 
-<div class="shell">
-<main id="main">
+  <div class="content" id="main">
+  <div class="content-inner">
+    <div class="banner load-error" id="loadError" hidden><span class="dot err" aria-hidden="true"></span><div></div></div>
+
+    <!-- ============ TAB: DASHBOARD ============ -->
+    <div class="tab-panel active" id="tab-dashboard" role="tabpanel" aria-label="Dashboard">
+      <div class="page-head">
+        <h1>Dashboard</h1>
+        <p>Live throttle counters, token usage, and the request pool, polled from the proxy.</p>
+      </div>
+
+  <div class="hero-grid" aria-label="Token usage and estimated cost">
+    <article class="hero-card hero-tokens">
+      <span class="hero-ico"><svg aria-hidden="true"><use href="#icon-token"></use></svg>Tokens</span>
+      <div class="hero-num grad-text" id="heroTokens">0</div>
+      <div class="hero-sub">Total tokens (full log)</div>
+    </article>
+    <article class="hero-card hero-cost">
+      <span class="hero-ico"><svg aria-hidden="true"><use href="#icon-coins"></use></svg>Cost</span>
+      <div class="hero-num" id="heroCost">$0.00</div>
+      <div class="hero-sub">Estimated cost (full log) · pricing is approximate</div>
+    </article>
+  </div>
+
+  <section class="section" aria-labelledby="breakdownTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="breakdownTitle">Per-model usage</h2>
+        <p class="section-copy">Tokens and estimated cost per model across the full request log. Costs are <strong>estimated</strong> from published API pricing and may not match actual billing.</p>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="model-breakdown" id="modelBreakdown"></div>
+    </div>
+  </section>
+
   <section class="section" aria-labelledby="statsTitle">
     <div class="section-header">
       <div>
@@ -874,17 +1329,24 @@
       </div>
       <div class="table-shell pool-scroll">
         <table aria-label="Request pool">
-          <thead><tr><th>Time</th><th>Status</th><th>Model</th><th>Backend / API</th><th>Account / org</th><th>Latency</th><th>Prompt preview</th><th>Error</th></tr></thead>
+          <thead><tr><th>Time</th><th>Status</th><th>Model</th><th>Backend / API</th><th>Account / org</th><th>Latency</th><th>Tokens</th><th>Prompt preview</th><th>Error</th></tr></thead>
           <tbody id="poolBody"></tbody>
         </table>
       </div>
     </div>
   </section>
+    </div><!-- /tab-dashboard -->
 
+    <!-- ============ TAB: ACCOUNTS ============ -->
+    <div class="tab-panel" id="tab-accounts" role="tabpanel" aria-label="Accounts">
+      <div class="page-head">
+        <h1>Accounts</h1>
+        <p>Org-scoped Claude OAuth accounts and the subscription OAuth login flow.</p>
+      </div>
   <section class="section" aria-labelledby="accountsTitle">
     <div class="section-header">
       <div>
-        <h2 id="accountsTitle">Accounts</h2>
+        <h2 id="accountsTitle">Account Pool</h2>
         <p class="section-copy">Org-scoped Claude OAuth accounts back the subscription OAuth backend and rotate automatically when one org is quota-limited.</p>
       </div>
       <button class="primary" id="addAccount" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add account</button>
@@ -945,37 +1407,14 @@
       <ul class="status-list" id="oauthStatusList"></ul>
     </div>
   </section>
+    </div><!-- /tab-accounts -->
 
-  <section class="section" aria-labelledby="mapperTitle">
-    <div class="section-header">
-      <div>
-        <h2 id="mapperTitle">Model Mapper</h2>
-        <p class="section-copy">Map Claude Code tiers to router backends and import the mapping into cc-switch.</p>
+    <!-- ============ TAB: ROUTING ============ -->
+    <div class="tab-panel" id="tab-routing" role="tabpanel" aria-label="Routing">
+      <div class="page-head">
+        <h1>Routing</h1>
+        <p>Backends, the route table, and condition-based virtual models.</p>
       </div>
-      <div class="row">
-        <button class="primary" id="mapperImport" type="button"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Import to CC Switch</button>
-        <button id="mapperApply" type="button"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Apply</button>
-        <button class="ghost" id="mapperCopy" type="button"><svg aria-hidden="true"><use href="#icon-copy"></use></svg>Copy link</button>
-      </div>
-    </div>
-    <div class="section-body panel-grid">
-      <div class="banner" id="mapperConflictBanner" hidden><span class="dot warn" aria-hidden="true"></span><div></div></div>
-      <div id="mapperStatus" class="soft" aria-live="polite"></div>
-      <div class="mapper-grid" id="mapperRows"></div>
-      <div class="mapper-preview-grid">
-        <div>
-          <p class="mapper-preview-head">cc-switch deep link</p>
-          <div class="preview"><pre id="mapperDeeplinkPreview"></pre></div>
-        </div>
-        <div>
-          <p class="mapper-preview-head">Routes preview</p>
-          <div class="preview"><pre id="mapperRoutesPreview"></pre></div>
-        </div>
-      </div>
-      <a id="mapperOpenLink" href="#" hidden>Open cc-switch import</a>
-    </div>
-  </section>
-
   <section class="section" aria-labelledby="backendsTitle">
     <div class="section-header">
       <div>
@@ -1029,6 +1468,43 @@
       <div class="backend-grid" id="virtualModelsGrid"></div>
     </div>
   </section>
+    </div><!-- /tab-routing -->
+
+    <!-- ============ TAB: MAPPER ============ -->
+    <div class="tab-panel" id="tab-mapper" role="tabpanel" aria-label="Mapper">
+      <div class="page-head">
+        <h1>Mapper</h1>
+        <p>Map Claude Code tiers to backends, then save profiles of router settings.</p>
+      </div>
+  <section class="section" aria-labelledby="mapperTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="mapperTitle">Model Mapper</h2>
+        <p class="section-copy">Map Claude Code tiers to router backends and import the mapping into cc-switch.</p>
+      </div>
+      <div class="row">
+        <button class="primary" id="mapperImport" type="button"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Import to CC Switch</button>
+        <button id="mapperApply" type="button"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Apply</button>
+        <button class="ghost" id="mapperCopy" type="button"><svg aria-hidden="true"><use href="#icon-copy"></use></svg>Copy link</button>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="banner" id="mapperConflictBanner" hidden><span class="dot warn" aria-hidden="true"></span><div></div></div>
+      <div id="mapperStatus" class="soft" aria-live="polite"></div>
+      <div class="mapper-grid" id="mapperRows"></div>
+      <div class="mapper-preview-grid">
+        <div>
+          <p class="mapper-preview-head">cc-switch deep link</p>
+          <div class="preview"><pre id="mapperDeeplinkPreview"></pre></div>
+        </div>
+        <div>
+          <p class="mapper-preview-head">Routes preview</p>
+          <div class="preview"><pre id="mapperRoutesPreview"></pre></div>
+        </div>
+      </div>
+      <a id="mapperOpenLink" href="#" hidden>Open cc-switch import</a>
+    </div>
+  </section>
 
   <section class="section" aria-labelledby="profilesTitle">
     <div class="section-header">
@@ -1078,29 +1554,63 @@
       </div>
     </div>
   </section>
+    </div><!-- /tab-mapper -->
 
+    <!-- ============ TAB: HELP ============ -->
+    <div class="tab-panel" id="tab-help" role="tabpanel" aria-label="Help">
+      <div class="page-head">
+        <h1>Help</h1>
+        <p>How the dummy key works, plus command and project references.</p>
+      </div>
   <section class="section" aria-labelledby="dummyTitle">
     <div class="section-header">
       <div>
-        <h2 id="dummyTitle">Dummy Key Help</h2>
+        <h2 id="dummyTitle">Dummy Key</h2>
         <p class="section-copy"><code>ANTHROPIC_API_KEY=claude-router</code> is intentionally non-empty so Claude Code will send requests. The router ignores that dummy key and injects the selected backend's OAuth token, x-api-key, or bearer token upstream.</p>
       </div>
     </div>
+    <div class="section-body panel-grid">
+      <div class="banner">
+        <span class="dot warn" aria-hidden="true"></span>
+        <div>Set <code>ANTHROPIC_BASE_URL</code> to this router and <code>ANTHROPIC_API_KEY=claude-router</code>. Real upstream credentials never leave the backend config.</div>
+      </div>
+    </div>
   </section>
-</main>
 
-<footer class="footer">
-  <div class="footer-links" aria-label="Project links">
-    <a href="README.md">README</a>
-    <a href="docs/superpowers/specs/2026-06-25-claude-router-multi-backend-design.md">Multi-backend spec</a>
-    <a href="docs/superpowers/specs/2026-06-24-claude-router-design.md">Original spec</a>
-  </div>
-  <div class="command-list" aria-label="Commands">
-    <code>node server.js --selftest</code>
-    <code>node server.js --checkbackends</code>
-  </div>
-</footer>
-</div>
+  <section class="section" aria-labelledby="commandsTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="commandsTitle">Commands</h2>
+        <p class="section-copy">Run these from the project directory.</p>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="command-list" aria-label="Commands">
+        <code>node server.js --selftest</code>
+        <code>node server.js --checkbackends</code>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="linksTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="linksTitle">Project links</h2>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="footer-links" aria-label="Project links">
+        <a class="button ghost" href="README.md"><svg aria-hidden="true"><use href="#icon-external"></use></svg>README</a>
+        <a class="button ghost" href="docs/superpowers/specs/2026-06-25-claude-router-multi-backend-design.md"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Multi-backend spec</a>
+        <a class="button ghost" href="docs/superpowers/specs/2026-06-24-claude-router-design.md"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Original spec</a>
+      </div>
+    </div>
+  </section>
+    </div><!-- /tab-help -->
+
+  </div><!-- /content-inner -->
+  </div><!-- /content -->
+</div><!-- /app -->
 
 <div class="modal-backdrop" id="accountModal" hidden>
   <section class="modal" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
@@ -1356,6 +1866,55 @@ const MAPPER_DEFAULT_MODELS = {
   haiku: "gpt-5.5-instant"
 };
 const CUSTOM_MODEL_VALUE = "__custom__";
+
+// --- token / cost estimation (hardcoded, clearly labeled "estimated") -----------
+// $ per million tokens — estimated from published API pricing.
+const MODEL_PRICING = {
+  "claude-opus-4-8":      { input: 15,   output: 75   },
+  "claude-sonnet-4-5":    { input: 3,    output: 15   },
+  "claude-haiku-4-5":     { input: 0.25, output: 1.25 },
+  "claude-fable-5":       { input: 5,    output: 25   }, // estimate
+  "glm-5.2":              { input: 0.14, output: 0.42 }, // DashScope estimate
+  "gpt-5.5":              { input: 5,    output: 15   },
+  "gpt-5.5-xhigh":        { input: 5,    output: 15   },
+  "gpt-5.5-instant":      { input: 0.50, output: 1.50 },
+  "gpt-5.5-low":          { input: 0.50, output: 1.50 },
+  "gpt-5.5-medium":       { input: 2,    output: 6    },
+  "gpt-5.5-high":         { input: 5,    output: 15   },
+  "gpt-5.5-max":          { input: 10,   output: 30   },
+};
+const DEFAULT_PRICING = { input: 1, output: 3 };
+function pricingFor(model) {
+  const key = String(model || "").trim();
+  return MODEL_PRICING[key] || DEFAULT_PRICING;
+}
+// Pull input/output token counts off a request's usage record (Anthropic-shaped).
+function reqTokens(r) {
+  const u = (r && r.usage) || {};
+  const input = Number(u.input_tokens || 0) + Number(u.cache_read_input_tokens || 0) + Number(u.cache_creation_input_tokens || 0);
+  const output = Number(u.output_tokens || 0);
+  return { input, output };
+}
+function reqCost(r) {
+  const { input, output } = reqTokens(r);
+  const price = pricingFor(r && r.requestedModel);
+  return (input / 1e6) * price.input + (output / 1e6) * price.output;
+}
+function fmtTokens(n) {
+  n = Number(n || 0);
+  if (n <= 0) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return String(Math.round(n));
+}
+function fmtCost(n) {
+  n = Number(n || 0);
+  if (n <= 0) return "$0.00";
+  if (n < 0.01) return "<$0.01";
+  if (n >= 1000) return "$" + (n / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+  return "$" + n.toFixed(2);
+}
+
 const $ = (id) => document.getElementById(id);
 let state = {
   mode: "loading",
@@ -1375,6 +1934,8 @@ let state = {
     settings: { fullTraceEnabled: false },
     expanded: {},
     traceCache: {},
+    traceOpen: {},
+    totals: null,
     filters: { status: "", backend: "", model: "", q: "" }
   },
   mapper: {
@@ -1476,14 +2037,15 @@ async function loadAll({ quiet = false } = {}) {
   try {
     const mapperState = state.mapper;
     const poolState = state.pool;
-    const [stateData, accountsData, backends, routes, profileData, poolData, poolSettings] = await Promise.all([
+    const [stateData, accountsData, backends, routes, profileData, poolData, poolSettings, poolTotals] = await Promise.all([
       api("GET", "/api/state"),
       api("GET", "/api/accounts"),
       api("GET", "/api/backends"),
       api("GET", "/api/routes"),
       api("GET", "/api/profiles"),
       api("GET", poolQuery()).catch(() => null),
-      api("GET", "/api/request-settings").catch(() => null)
+      api("GET", "/api/request-settings").catch(() => null),
+      api("GET", "/api/requests/totals").catch(() => null)
     ]);
     state = {
       ...stateData,
@@ -1499,7 +2061,8 @@ async function loadAll({ quiet = false } = {}) {
         ...poolState,
         requests: poolData && Array.isArray(poolData.requests) ? poolData.requests : [],
         stats: poolData && poolData.stats ? poolData.stats : poolState.stats,
-        settings: poolSettings && typeof poolSettings === "object" ? poolSettings : poolState.settings
+        settings: poolSettings && typeof poolSettings === "object" ? poolSettings : poolState.settings,
+        totals: poolTotals && poolTotals.byModel ? poolTotals : poolState.totals
       },
       mapper: mapperState
     };
@@ -1566,6 +2129,84 @@ function renderStats() {
   `).join("");
 }
 
+// Aggregate tokens + estimated cost across the recent-buffer requests and render
+// the Dashboard hero (big total tokens + cost) and the per-model breakdown cards.
+function costFromTokens(model, input, output) {
+  const p = pricingFor(model);
+  return (input / 1e6) * p.input + (output / 1e6) * p.output;
+}
+// Full traces can be MEGABYTES (a request body carries the entire system prompt +
+// hundreds of messages). Rendering all of it in a <pre> froze the browser. Cap the
+// displayed string so the panel stays responsive; note the truncation.
+const TRACE_RENDER_CAP = 60000;
+function traceText(trace) {
+  let s;
+  try { s = JSON.stringify(trace, null, 2); } catch { s = String(trace); }
+  if (s.length > TRACE_RENDER_CAP) {
+    return s.slice(0, TRACE_RENDER_CAP) + `\n\n… [truncated — ${fmtTokens(s.length)} chars total; full trace on disk in ~/.claude-router/request-traces]`;
+  }
+  return s;
+}
+function renderBilling() {
+  // Prefer FULL-HISTORY totals from /api/requests/totals (scans the JSONL log, not
+  // just the in-memory buffer); fall back to the buffer if the endpoint isn't loaded
+  // yet (e.g. the running server predates the totals endpoint).
+  const totals = state.pool && state.pool.totals;
+  let totalTokens = 0;
+  let totalCost = 0;
+  const byModel = {}; // model -> { input, output, cost, count }
+  if (totals && totals.byModel) {
+    for (const [model, m] of Object.entries(totals.byModel)) {
+      const input = m.input || 0, output = m.output || 0;
+      const cost = costFromTokens(model, input, output);
+      totalTokens += input + output;
+      totalCost += cost;
+      byModel[model] = { input, output, cost, count: m.count || 0 };
+    }
+  } else {
+    const reqs = (state.pool && Array.isArray(state.pool.requests)) ? state.pool.requests : [];
+    for (const r of reqs) {
+      const { input, output } = reqTokens(r);
+      if (!input && !output) continue;
+      const cost = reqCost(r);
+      totalTokens += input + output;
+      totalCost += cost;
+      const key = String((r && r.requestedModel) || "unknown");
+      const m = byModel[key] || (byModel[key] = { input: 0, output: 0, cost: 0, count: 0 });
+      m.input += input; m.output += output; m.cost += cost; m.count += 1;
+    }
+  }
+  const heroTokens = $("heroTokens");
+  const heroCost = $("heroCost");
+  if (heroTokens) heroTokens.textContent = fmtTokens(totalTokens);
+  if (heroCost) heroCost.textContent = fmtCost(totalCost);
+
+  const grid = $("modelBreakdown");
+  if (!grid) return;
+  const models = Object.entries(byModel).sort((a, b) => (b[1].input + b[1].output) - (a[1].input + a[1].output));
+  if (!models.length) {
+    grid.innerHTML = `<div class="empty">No token usage yet. Send requests through the proxy and per-model tokens and cost will appear here.</div>`;
+    return;
+  }
+  const maxTokens = Math.max(...models.map(([, m]) => m.input + m.output), 1);
+  grid.innerHTML = models.map(([model, m]) => {
+    const tok = m.input + m.output;
+    const pct = Math.max(3, Math.round((tok / maxTokens) * 100));
+    const estimated = !MODEL_PRICING[model];
+    return `
+      <article class="model-card" title="${esc(model)}">
+        <div class="mc-name">${esc(model)}</div>
+        <div class="mc-bar"><i style="width:${pct}%"></i></div>
+        <div class="mc-stats">
+          <span class="mc-tokens"><strong>${esc(fmtTokens(tok))}</strong> tok <span class="soft">(${esc(fmtTokens(m.input))}→${esc(fmtTokens(m.output))})</span></span>
+          <span class="mc-cost">${esc(fmtCost(m.cost))}</span>
+        </div>
+        <div class="mc-est">${m.count} req${m.count === 1 ? "" : "s"}${estimated ? " · default pricing" : ""}</div>
+      </article>
+    `;
+  }).join("");
+}
+
 const POOL_STATUS_TONE = { pending: "warn", streaming: "warn", success: "ok", error: "danger", client_aborted: "danger" };
 function poolStatusPill(status) {
   const tone = POOL_STATUS_TONE[status] || "";
@@ -1591,7 +2232,13 @@ function poolAccountLabel(r) {
   if (r.authScheme && r.authScheme !== "oauth") return esc(r.authScheme);
   return "—";
 }
+function poolTokenCell(r) {
+  const { input, output } = reqTokens(r);
+  if (!input && !output) return `<span class="pool-tokens soft">—</span>`;
+  return `<span class="pool-tokens">${esc(fmtTokens(input))}<span class="soft">→</span><span class="tk-out">${esc(fmtTokens(output))}</span></span>`;
+}
 function renderPool() {
+  renderBilling();
   const pool = state.pool || {};
   const s = pool.stats || {};
   // sync the full-trace toggle with persisted settings (unless the box is focused mid-edit)
@@ -1633,8 +2280,12 @@ function renderPool() {
 
   const rows = pool.requests || [];
   const body = $("poolBody");
+  // Preserve scroll position across the innerHTML rebuild so the 3s auto-refresh
+  // doesn't snap the user back to the top (esp. while reading an expanded trace).
+  const scroller = body.closest(".pool-scroll");
+  const savedScroll = scroller ? scroller.scrollTop : 0;
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="8" class="pool-empty">No requests logged yet. Send a request through the proxy and it will appear here.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="pool-empty">No requests logged yet. Send a request through the proxy and it will appear here.</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((r) => {
@@ -1647,19 +2298,27 @@ function renderPool() {
         <td>${esc(r.backendName || r.backendId || "—")}${r.backendFormat ? `<div class="hint">${esc(r.backendFormat)}</div>` : ""}</td>
         <td>${poolAccountLabel(r)}</td>
         <td>${esc(fmtLatency(r.latencyMs))}</td>
+        <td>${poolTokenCell(r)}</td>
         <td class="pool-prompt" title="${esc(r.promptPreview || "")}">${esc(truncate(r.promptPreview || "", 80) || "—")}</td>
         <td class="pool-err" title="${esc(r.errorPreview || "")}">${esc(truncate(r.errorPreview || "", 50) || "")}</td>
       </tr>`;
     return main + (expanded ? poolDetailRow(r) : "");
   }).join("");
+  if (scroller && savedScroll) scroller.scrollTop = savedScroll;
 }
 function poolDetailRow(r) {
   const usage = r.usage ? JSON.stringify(r.usage) : "—";
+  const { input, output } = reqTokens(r);
+  const tokenSummary = (input || output)
+    ? `${esc(fmtTokens(input))} in → ${esc(fmtTokens(output))} out · est. ${esc(fmtCost(reqCost(r)))}`
+    : "—";
+  const open = state.pool.traceOpen && state.pool.traceOpen[r.id] && state.pool.traceCache && state.pool.traceCache[r.id];
+  const preContent = open ? esc(traceText(state.pool.traceCache[r.id])) : "";
   const traceHtml = r.traceAvailable
-    ? `<button class="ghost" data-trace="${esc(r.id)}" type="button">${icon("eye")}View full trace</button><pre class="pool-detail-pre" id="trace-${esc(r.id)}" hidden></pre>`
+    ? `<button class="ghost" data-trace="${esc(r.id)}" type="button">${icon("eye")}${open ? "Hide" : "View"} full trace</button><pre class="pool-detail-pre" id="trace-${esc(r.id)}"${open ? "" : " hidden"}>${preContent}</pre>`
     : `<span class="hint">No full trace (enable full trace capture, then send a new request).</span>`;
   return `
-    <tr class="pool-detail"><td colspan="8"><div class="pool-detail-inner">
+    <tr class="pool-detail"><td colspan="9"><div class="pool-detail-inner">
       <dl class="pool-detail-grid">
         <dt>Request id</dt><dd>${esc(r.id)}</dd>
         <dt>Method / path</dt><dd>${esc(r.method || "")} ${esc(r.path || "")}${r.stream ? " (stream)" : ""}</dd>
@@ -1671,6 +2330,7 @@ function poolDetailRow(r) {
         <dt>Status</dt><dd>${esc(r.status)}${r.httpStatus ? " · HTTP " + esc(r.httpStatus) : ""}${r.stopReason ? " · stop=" + esc(r.stopReason) : ""}</dd>
         <dt>Latency</dt><dd>${esc(fmtLatency(r.latencyMs))}</dd>
         <dt>Retries / rotations</dt><dd>${esc(r.retryCount || 0)} / ${esc(r.rotationCount || 0)}</dd>
+        <dt>Tokens / cost</dt><dd>${tokenSummary}</dd>
         <dt>Usage</dt><dd>${esc(usage)}</dd>
       </dl>
       <div><strong>Prompt preview</strong><pre class="pool-detail-pre">${esc(r.promptPreview || "—")}</pre></div>
@@ -2711,14 +3371,16 @@ function bindPoolEvents() {
     const traceBtn = e.target.closest("[data-trace]");
     if (traceBtn) {
       e.stopPropagation();
+      e.preventDefault();
       const id = traceBtn.getAttribute("data-trace");
       const pre = $(`trace-${id}`);
       if (!pre) return;
-      if (!pre.hidden) { pre.hidden = true; return; }
+      if (!pre.hidden) { pre.hidden = true; delete state.pool.traceOpen[id]; return; }
       try {
         const trace = state.pool.traceCache[id] || await api("GET", `/api/requests/${encodeURIComponent(id)}/trace`);
         state.pool.traceCache[id] = trace;
-        pre.textContent = JSON.stringify(trace, null, 2);
+        state.pool.traceOpen[id] = true; // persist so the 3s auto-refresh re-render keeps it visible
+        pre.textContent = traceText(trace);
         pre.hidden = false;
       } catch (err) {
         pre.textContent = "Failed to load trace: " + (err.message || err);
@@ -2792,12 +3454,6 @@ function bindEvents() {
       temp.remove();
       toast("Router base URL copied", "ok");
     }
-  });
-  $("themeToggle").addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("claudeRouterTheme", next);
-    $("themeToggle").textContent = `Theme: ${next}`;
   });
   $("addAccount").addEventListener("click", openAccountModal);
   $("closeAccountModal").addEventListener("click", closeAccountModal);
@@ -3152,11 +3808,53 @@ function bindEvents() {
   });
 }
 
+const TABS = ["dashboard", "accounts", "routing", "mapper", "help"];
+function activateTab(tab) {
+  if (!TABS.includes(tab)) tab = "dashboard";
+  for (const t of TABS) {
+    const panel = $(`tab-${t}`);
+    if (panel) panel.classList.toggle("active", t === tab);
+  }
+  document.querySelectorAll("#tabNav .nav-item").forEach((btn) => {
+    const on = btn.dataset.tab === tab;
+    if (on) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
+  });
+  try { localStorage.setItem("claudeRouterTab", tab); } catch {}
+  const content = $("main");
+  if (content) content.scrollTop = 0;
+}
+function setupTabs() {
+  $("tabNav").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-tab]");
+    if (!btn) return;
+    activateTab(btn.dataset.tab);
+  });
+  let initial = "dashboard";
+  try { const saved = localStorage.getItem("claudeRouterTab"); if (saved && TABS.includes(saved)) initial = saved; } catch {}
+  activateTab(initial);
+}
+
+const THEMES = ["graphite", "midnight", "terminal", "cyberpunk", "porcelain", "sandstone"];
+const DEFAULT_THEME = "midnight";
+function applyTheme(name) {
+  const t = THEMES.includes(name) ? name : DEFAULT_THEME;
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("claudeRouterTheme", t); } catch {}
+  const sel = $("themeSelect");
+  if (sel && sel.value !== t) sel.value = t;
+}
+function initTheme() {
+  let saved = DEFAULT_THEME;
+  try { const s = localStorage.getItem("claudeRouterTheme"); if (s && THEMES.includes(s)) saved = s; } catch {}
+  applyTheme(saved);
+  const sel = $("themeSelect");
+  if (sel) sel.addEventListener("change", () => applyTheme(sel.value));
+}
 function init() {
-  const storedTheme = localStorage.getItem("claudeRouterTheme");
-  if (storedTheme === "light" || storedTheme === "dark") document.documentElement.dataset.theme = storedTheme;
-  $("themeToggle").textContent = `Theme: ${document.documentElement.dataset.theme}`;
+  initTheme();
   $("adminToken").value = sessionStorage.getItem("claudeRouterAdminToken") || "";
+  setupTabs();
   bindEvents();
   renderAll();
   loadAll({ quiet: true });

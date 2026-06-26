@@ -682,13 +682,19 @@ function curlFetch(url, { method = "GET", headers = {}, body } = {}) {
     const args = ["-sS", "-i", "-N", "--no-buffer", "--max-time", "180", url, "-X", String(method)];
     for (const [k, v] of Object.entries(headers)) args.push("-H", `${k}: ${v}`);
     args.push("-H", "Expect:"); // disable Expect:100-continue (its 100 preamble breaks -i parsing)
-    if (body != null && body !== "") {
-      const bodyStr = Buffer.isBuffer(body) ? body.toString("utf8") : String(body);
-      args.push("--data-raw", bodyStr);
-    }
+    // Send the body via STDIN (--data-binary @-) as raw bytes — NOT as a CLI argument.
+    // Passing it on argv mangles non-ASCII (CJK/emoji → "surrogates not allowed" 400 from
+    // Anthropic) and overflows the Windows ~32KB command-line limit for large opus bodies.
+    // Buffer keeps the exact UTF-8 bytes; @- reads stdin verbatim. (memory: windows-http-utf8-testing)
+    const bodyBuf = (body != null && body !== "")
+      ? (Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8"))
+      : null;
+    if (bodyBuf) args.push("--data-binary", "@-");
     let child;
     try { child = spawn("curl", args, { windowsHide: true }); }
     catch (e) { return reject(new Error("curl spawn failed: " + e.message)); }
+    if (bodyBuf) { try { child.stdin.write(bodyBuf); child.stdin.end(); } catch (e) { /* EPIPE if curl exits early */ } }
+    else { try { child.stdin.end(); } catch {} }
     let prelude = Buffer.alloc(0);
     let preludeDone = false;
     const queued = [];
@@ -2654,6 +2660,7 @@ const requestLog = {
       if (rec.latencyMs == null) rec.latencyMs = Math.max(0, rec.finishedAt - rec.startedAt);
       if (typeof rec.errorPreview === "string" && rec.errorPreview.length > 600) rec.errorPreview = rec.errorPreview.slice(0, 600);
       this._append(rec);
+      this._totalsCache = null; // invalidate: a finished request adds usage to the totals
     } catch {}
   },
 
@@ -2775,6 +2782,46 @@ const requestLog = {
         if (f.endsWith(".json")) { try { fs.unlinkSync(path.join(this._traceDir(), f)); } catch {} }
       }
     } catch {}
+    this._totalsCache = null; // invalidate totals cache
+  },
+
+  // Aggregate tokens from the FULL JSONL log + in-memory buffer (not just the
+  // recent buffer). The big Dashboard counter should reflect ALL logged history,
+  // not just the last N requests in memory. Dedupes by request id (buffer + JSONL
+  // overlap for finished requests). Cached; invalidated on finish()/clear().
+  _totalsCache: null,
+  totals() {
+    if (this._totalsCache) return this._totalsCache;
+    const byModel = {};
+    let totalInput = 0, totalOutput = 0;
+    const seen = new Set();
+    const aggregate = (rec) => {
+      if (!rec || seen.has(rec.id)) return;
+      seen.add(rec.id);
+      const model = rec.requestedModel || rec.upstreamModel || "unknown";
+      const u = rec.usage || {};
+      const inp = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      const out = u.output_tokens || 0;
+      totalInput += inp; totalOutput += out;
+      if (!byModel[model]) byModel[model] = { input: 0, output: 0, count: 0 };
+      byModel[model].input += inp; byModel[model].output += out; byModel[model].count++;
+    };
+    // scan JSONL file(s) — full history (rotated + current)
+    for (const file of [this._logFile1(), this._logFile()]) {
+      try {
+        if (!fs.existsSync(file)) continue;
+        const data = fs.readFileSync(file, "utf8");
+        for (const line of data.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          try { aggregate(JSON.parse(t)); } catch {}
+        }
+      } catch {}
+    }
+    // scan in-memory buffer (adds pending/streaming not yet flushed to JSONL)
+    for (const r of this.recent) aggregate(r);
+    this._totalsCache = { totalInputTokens: totalInput, totalOutputTokens: totalOutput, byModel };
+    return this._totalsCache;
   },
 };
 
@@ -3785,6 +3832,10 @@ async function apiRouter(req, res, url) {
         if (!isAdminOk(req)) return adminDenied(res);
         requestLog.clear();
         return sendJson(res, 200, { ok: true });
+      }
+      if (seg.length === 3 && seg[2] === "totals" && method === "GET") {
+        // full-history token/cost totals from the JSONL log (NOT just the recent buffer)
+        return sendJson(res, 200, requestLog.totals());
       }
       if (seg.length === 3 && method === "GET") {
         const rec = requestLog.get(decodeURIComponent(seg[2]));

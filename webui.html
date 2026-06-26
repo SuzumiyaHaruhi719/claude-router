@@ -51,6 +51,12 @@
     --code-fg: #dbeafe;
     --scrollbar-thumb: rgba(255,255,255,0.18);
     --scrollbar-thumb-hover: rgba(255,255,255,0.30);
+    /* theme-aware surface tints (dark themes: white overlay; light themes: dark overlay) */
+    --input-bg: rgba(8, 10, 16, 0.45);
+    --hover-tint: var(--hover-tint);
+    --card-tint: var(--card-tint);
+    --scrim: rgba(2, 6, 14, 0.55);
+    --glow: color-mix(in srgb, var(--primary), transparent 78%);
     --mesh:
       radial-gradient(ellipse 80% 60% at 15% 0%, rgba(76, 201, 240, 0.12), transparent 60%),
       radial-gradient(ellipse 70% 50% at 85% 5%, rgba(167, 139, 250, 0.10), transparent 60%),
@@ -144,6 +150,8 @@
     --ring: 0 0 0 3px rgba(2,132,199,.25);
     --code-bg: #e7edf5; --code-fg: #0f172a;
     --scrollbar-thumb: rgba(15,23,42,0.22); --scrollbar-thumb-hover: rgba(15,23,42,0.38);
+    --input-bg: rgba(255,255,255,0.75); --hover-tint: rgba(15,23,42,0.05); --card-tint: rgba(15,23,42,0.028);
+    --scrim: rgba(15,23,42,0.32);
     --grad: linear-gradient(135deg,#0284c7,#38bdf8);
     --mesh:
       radial-gradient(ellipse 80% 60% at 15% 0%, rgba(2,132,199,0.10), transparent 60%),
@@ -166,6 +174,8 @@
     --ring: 0 0 0 3px rgba(194,65,12,.24);
     --code-bg: #ece3d5; --code-fg: #292524;
     --scrollbar-thumb: rgba(68,46,20,0.22); --scrollbar-thumb-hover: rgba(68,46,20,0.40);
+    --input-bg: rgba(255,253,250,0.80); --hover-tint: rgba(68,46,20,0.05); --card-tint: rgba(68,46,20,0.03);
+    --scrim: rgba(41,37,36,0.32);
     --grad: linear-gradient(135deg,#c2410c,#f59e0b);
     --mesh:
       radial-gradient(ellipse 80% 60% at 15% 0%, rgba(194,65,12,0.08), transparent 60%),
@@ -229,7 +239,7 @@
     border-color: transparent;
     color: var(--primary-ink);
     font-weight: 700;
-    box-shadow: 0 4px 14px rgba(76, 201, 240, 0.22);
+    box-shadow: 0 4px 14px var(--glow);
   }
   .primary:hover { background: linear-gradient(135deg, color-mix(in srgb, var(--primary), white 12%), var(--primary)); }
   .danger {
@@ -249,7 +259,7 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     padding: 9px 11px;
-    background: rgba(8, 10, 16, 0.45);
+    background: var(--input-bg);
     color: var(--text);
     transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
@@ -265,7 +275,7 @@
   code, .mono {
     font-family: var(--mono);
     font-size: 12px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover-tint);
     border: 1px solid var(--line);
     border-radius: 6px;
     padding: 2px 6px;
@@ -376,13 +386,13 @@
     width: 38px;
     height: 38px;
     flex: 0 0 auto;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid var(--line-strong);
     border-radius: 11px;
     display: grid;
     place-items: center;
     background: var(--grad);
-    color: #04121a;
-    box-shadow: 0 6px 18px rgba(76, 201, 240, 0.25);
+    color: var(--primary-ink);
+    box-shadow: 0 6px 18px var(--glow);
   }
   .brand-text { min-width: 0; }
   .brand-text strong { display: block; font-size: 14px; line-height: 1.2; letter-spacing: .01em; }
@@ -409,8 +419,8 @@
   .nav-item svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .nav-item:hover { background: color-mix(in srgb, var(--surface-2), transparent 30%); color: var(--text); }
   .nav-item[aria-current="page"] {
-    background: linear-gradient(135deg, rgba(76, 201, 240, 0.16), rgba(167, 139, 250, 0.12));
-    border-color: rgba(255, 255, 255, 0.10);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--primary), transparent 84%), color-mix(in srgb, var(--accent), transparent 88%));
+    border-color: var(--line-strong);
     color: var(--text);
   }
   .nav-item[aria-current="page"] svg { color: var(--primary); }
@@ -481,7 +491,7 @@
     min-width: min(40vw, 240px);
     border: 1px solid var(--line);
     border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover-tint);
     padding: 3px 3px 3px 6px;
   }
   .base-url code {
@@ -532,10 +542,10 @@
     border: 1px solid var(--line);
     border-radius: 14px;
     padding: 13px 14px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--card-tint);
     transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
-  .metric:hover { border-color: rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.05); }
+  .metric:hover { border-color: var(--line-strong); background: var(--hover-tint); }
   .metric .k { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .metric .v { margin-top: 8px; font: 700 26px/1 var(--mono); color: var(--text); }
   .metric .hint { margin-top: 8px; color: var(--subtle); font-size: 12px; }
@@ -604,13 +614,13 @@
   .model-card {
     border: 1px solid var(--line);
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--card-tint);
     padding: 12px 13px;
     display: grid;
     gap: 8px;
     transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
-  .model-card:hover { border-color: rgba(255,255,255,0.13); background: rgba(255,255,255,0.05); }
+  .model-card:hover { border-color: var(--line-strong); background: var(--hover-tint); }
   .model-card .mc-name {
     font: 700 13px/1.2 var(--mono);
     color: var(--text);
@@ -625,7 +635,7 @@
   .mc-bar {
     height: 6px;
     border-radius: var(--radius-pill);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--hover-tint);
     overflow: hidden;
   }
   .mc-bar > i {
@@ -687,11 +697,11 @@
     gap: 12px;
     border: 1px solid var(--line);
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--card-tint);
     padding: 14px;
     transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
   }
-  .backend-card:hover { border-color: rgba(255, 255, 255, 0.13); background: rgba(255, 255, 255, 0.05); }
+  .backend-card:hover { border-color: var(--line-strong); background: var(--hover-tint); }
   .card-head {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -784,7 +794,7 @@
     overflow-x: auto;
     border: 1px solid var(--line);
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--card-tint);
   }
   table {
     width: 100%;
@@ -958,7 +968,7 @@
     place-items: start center;
     overflow: auto;
     padding: 20px 12px;
-    background: rgba(2, 6, 14, .55);
+    background: var(--scrim);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
   }

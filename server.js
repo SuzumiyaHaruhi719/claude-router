@@ -2453,6 +2453,15 @@ async function anthropicPassthrough(req, res, backend, body) {
       continue;
     }
 
+    // AUTO-SWITCH: this account served the request OK. If it isn't the current active
+    // account (i.e. we rotated here because the previous active one hit 429/cooldown),
+    // promote it to active — the pool stays on the working org instead of bouncing back
+    // to the rate-limited one when its cooldown expires, and the dashboard reflects it.
+    if (up.status >= 200 && up.status < 300 && store.active_id !== account.id) {
+      store.active_id = account.id;
+      saveAccounts(store);
+      try { process.stderr.write(`[claude-router] auto-switched active account -> ${account.id} (${account.organization_name || account.organization_uuid || ""}) after 429/rotate\n`); } catch {}
+    }
     return streamUpstream(res, up, { id: logId, isStream });
   }
 
@@ -3011,14 +3020,24 @@ async function streamUpstream(res, up, log) {
   }
   res.writeHead(up.status, headers);
   let acc = "";
+  let streamErr = null;
   if (up.body) {
     const reader = up.body.getReader();
     const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(Buffer.from(value));
-      if (logId && acc.length < CAP) { try { acc += decoder.decode(value, { stream: true }); if (acc.length > CAP) acc = acc.slice(0, CAP); } catch {} }
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+        if (logId && acc.length < CAP) { try { acc += decoder.decode(value, { stream: true }); if (acc.length > CAP) acc = acc.slice(0, CAP); } catch {} }
+      }
+    } catch (e) {
+      // Upstream dropped mid-stream. Terminate CLEANLY so the client doesn't choke on a
+      // truncated partial SSE event ("API Error: Failed to parse JSON"). For an SSE stream,
+      // emit a proper Anthropic `event: error` frame as the terminal event; the client's
+      // stream parser handles it instead of failing on a dangling `data: {incomplete`.
+      streamErr = String(e && e.message || e);
+      if (isSse) { try { res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "upstream stream interrupted: " + streamErr } })}\n\n`); } catch {} }
     }
   }
   if (!logId) { res.end(); return; }
@@ -3032,7 +3051,8 @@ async function streamUpstream(res, up, log) {
         if (!block.trim()) continue;
         if (events.length < 40) events.push(block.slice(0, 800));
       }
-      const patch = { status: "success", httpStatus: up.status, ...requestLogPatchFromAnthropicSseText(acc) };
+      const patch = { status: streamErr ? "error" : "success", httpStatus: up.status, ...requestLogPatchFromAnthropicSseText(acc) };
+      if (streamErr) patch.errorPreview = "stream interrupted: " + streamErr;
       requestLog.trace(logId, { sseEventsPreview: events });
       markLogFinished(res, logId, patch);
     } else {

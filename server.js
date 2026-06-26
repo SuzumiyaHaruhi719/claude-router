@@ -3144,7 +3144,14 @@ async function apiMapperModels(backendId) {
   if (b.authScheme === "codex-oauth") return { models: CODEX_MAPPER_MODELS.map((m) => ({ ...m, backend: b.id })) };
 
   if (b.authScheme === "oauth") {
-    const token = await getAccessToken();
+    // Model LISTING is not inference — use ANY account's token, even one in cooldown.
+    // getAccessToken() uses pickAccount() which skips cooling accounts, making the
+    // model list unavailable when all accounts happen to be cooling (the user IS
+    // logged in; cooldown is an inference-only concept).
+    const store = await accountsForUse();
+    const account = (store.accounts.find(a => a.status !== "disabled") || store.accounts[0]) || null;
+    let token = "";
+    if (account) { try { token = await ensureAccountAccessToken(store, account); } catch {} }
     if (!token) return { models: [], error: "no Claude OAuth account token (login or add an account)" };
     const url = mapperModelsUrl(b);
     let r;

@@ -14,3 +14,4 @@ backends.json
 request-settings.json
 requests*.jsonl
 request-traces/
+restart-router.bat

@@ -40,7 +40,7 @@ const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const SCOPE = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-const REQUIRED_BETAS = ["oauth-2025-04-20", "claude-code-20250219"];
+const REQUIRED_BETAS = ["oauth-2025-04-20", "claude-code-20250219", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "prompt-caching-scope-2026-01-05", "fast-mode-2026-02-01", "redact-thinking-2026-02-12", "token-efficient-tools-2026-03-28"];
 
 // Env fallback (existing single-backend modes — feed the synthesizer when no
 // backends.json exists, so the no-config + CLAUDE_ROUTER_API_KEY case is byte-
@@ -52,12 +52,17 @@ const KEY_MODE = !!STATIC_KEY;
 // --- config / profile paths ------------------------------------------------------
 const CFG_DIR   = path.join(os.homedir(), ".claude-router");          // creds + backends config
 const CRED_FILE = path.join(CFG_DIR, "creds.json");                   // existing OAuth tokens
+const ACCT_FILE = path.join(CFG_DIR, "accounts.json");                // org-scoped OAuth account pool
 const CFG_FILE  = path.join(CFG_DIR, "backends.json");                // NEW — multi-backend config
 const CODEX_AUTH_FILE = path.join(os.homedir(), ".codex", "auth.json"); // Codex CLI OAuth token (read-only)
 const CC_CRED_FILE = path.join(os.homedir(), ".claude", ".credentials.json"); // Claude Code CLI OAuth token (read-only reuse — idiot-proof default)
 const CC_SETTINGS        = path.join(os.homedir(), ".claude", "settings.json"); // CC-Switch target
 const CC_SETTINGS_LEGACY = path.join(os.homedir(), ".claude", "claude.json");   // CC-Switch fallback
 const CC_BACKUP  = path.join(CFG_DIR, "settings-backup.json");        // pre-takeover backup
+const REQUEST_LOG_FILE      = path.join(CFG_DIR, "requests.jsonl");          // request audit log (append-only)
+const REQUEST_LOG_FILE_1    = path.join(CFG_DIR, "requests.1.jsonl");        // rotated previous log
+const REQUEST_TRACE_DIR     = path.join(CFG_DIR, "request-traces");          // optional full traces, one file per request
+const REQUEST_SETTINGS_FILE = path.join(CFG_DIR, "request-settings.json");   // inspector settings
 const ADMIN_TOKEN = process.env.CLAUDE_ROUTER_ADMIN_TOKEN || "";      // optional guard for /api writes
 const DUMMY_KEY = "claude-router"; // non-empty dummy Claude Code sends; router ignores it
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;                            // backend id validation
@@ -66,6 +71,27 @@ const CODEX_RESPONSES_UPSTREAM = "https://chatgpt.com/backend-api/codex/response
 const CODEX_RESPONSES_MODEL = "gpt-5.5";
 const GLM_ANTHROPIC_UPSTREAM = "https://dashscope.aliyuncs.com/apps/anthropic";
 const GLM_OPENAI_COMPAT_UPSTREAM = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const ORG_AUTHORIZE_PREFIX = "https://claude.ai/v1/oauth";
+const OAUTH_PROFILE_URL = "https://claude.ai/api/oauth/profile";
+const ORGANIZATIONS_URL = "https://claude.ai/api/organizations";
+const MAPPER_TIERS = ["fable", "opus", "sonnet", "haiku"];
+const MAPPER_ROUTE_TIERS = ["opus", "sonnet", "haiku", "fable"];
+const MAPPER_DEFAULT_MODELS = {
+  fable: "gpt-5.5-xhigh",
+  opus: "claude-opus-4-8",
+  sonnet: "glm-5.2",
+  haiku: "gpt-5.5-instant",
+};
+const CODEX_MAPPER_MODELS = [
+  { id: "gpt-5.5", display: "GPT-5.5" },
+  { id: "gpt-5.5-low", display: "GPT-5.5 (low)" },
+  { id: "gpt-5.5-medium", display: "GPT-5.5 (medium)" },
+  { id: "gpt-5.5-high", display: "GPT-5.5 (high)" },
+  { id: "gpt-5.5-xhigh", display: "GPT-5.5 (xhigh)" },
+  { id: "gpt-5.5-max", display: "GPT-5.5 (max)" },
+  { id: "gpt-5.5-instant", display: "GPT-5.5 (instant)" },
+];
+const MAX_ROTATE_RETRIES = 3;
 const THROTTLE_DEFAULTS = {
   maxConcurrency: 5,
   maxRetries: 3,
@@ -86,19 +112,349 @@ function loadClaudeCodeCreds() {
   try {
     const o = JSON.parse(fs.readFileSync(CC_CRED_FILE, "utf8")).claudeAiOauth;
     if (!o || !o.accessToken) return null;
-    return { access_token: o.accessToken, expires_at: Number(o.expiresAt || 0), read_only: true };
+    return { access_token: o.accessToken, refresh_token: o.refreshToken || "", expires_at: Number(o.expiresAt || 0), read_only: true };
   } catch { return null; }
 }
-function loadCreds() {
-  const cc = loadClaudeCodeCreds();
-  if (cc && cc.access_token) return cc;           // default: reuse Claude Code's login
+function loadRouterCreds() {
   try { return JSON.parse(fs.readFileSync(CRED_FILE, "utf8")); } catch { return null; }
+}
+function loadCreds() {
+  const store = loadAccounts();
+  const picked = pickAccount(store);
+  if (picked && picked.claudeAiOauth && picked.claudeAiOauth.accessToken) return accountToLegacyCreds(picked);
+  const cc = loadClaudeCodeCreds();
+  if (cc && cc.access_token) return cc;           // default: reuse Claude Code's login until accounts.json exists
+  return loadRouterCreds();
 }
 function saveCreds(c) {
   fs.mkdirSync(CFG_DIR, { recursive: true });
   fs.writeFileSync(CRED_FILE, JSON.stringify(c, null, 2), { mode: 0o600 });
 }
 function clearCreds() { try { fs.unlinkSync(CRED_FILE); } catch {} }
+function clearAccounts() { try { fs.unlinkSync(ACCT_FILE); } catch {} }
+
+// --- OAuth account pool ----------------------------------------------------------
+function stringOrNull(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+function firstString(...values) {
+  for (const v of values) {
+    const s = stringOrNull(v);
+    if (s) return s;
+  }
+  return "";
+}
+function firstUuid(...values) {
+  return firstString(...values) || null;
+}
+function normalizeScopes(v) {
+  if (Array.isArray(v)) return v.map((x) => String(x)).filter(Boolean);
+  if (typeof v === "string") return v.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+  return [];
+}
+function nextAccountId(accounts) {
+  let max = 0;
+  for (const a of accounts || []) {
+    const m = String(a && a.id || "").match(/^acct_(\d+)$/);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return "acct_" + String(max + 1).padStart(2, "0");
+}
+function normalizeAccount(a) {
+  if (!a || typeof a !== "object") a = {};
+  const oauth = a.claudeAiOauth && typeof a.claudeAiOauth === "object" ? a.claudeAiOauth : {};
+  const status = ["active", "cooldown", "disabled"].includes(a.status) ? a.status : "active";
+  return {
+    id: String(a.id || ""),
+    label: String(a.label || a.organization_name || a.email || a.id || "Claude account"),
+    email: stringOrNull(a.email),
+    organization_uuid: a.organization_uuid == null ? null : String(a.organization_uuid),
+    organization_name: stringOrNull(a.organization_name),
+    account_uuid: stringOrNull(a.account_uuid),
+    claudeAiOauth: {
+      accessToken: String(oauth.accessToken || a.access_token || ""),
+      refreshToken: String(oauth.refreshToken || a.refresh_token || ""),
+      expiresAt: Number(oauth.expiresAt || a.expires_at || 0),
+    },
+    scopes: normalizeScopes(a.scopes || a.scope),
+    subscriptionType: stringOrNull(a.subscriptionType || a.subscription_type),
+    rateLimitTier: stringOrNull(a.rateLimitTier || a.rate_limit_tier),
+    status,
+    cooldown_until: a.cooldown_until == null ? null : Number(a.cooldown_until || 0),
+    cooldown_reason: a.cooldown_reason == null ? null : String(a.cooldown_reason),
+    rate_limit_reset_at: a.rate_limit_reset_at == null ? null : Number(a.rate_limit_reset_at || 0),
+    last_429_at: a.last_429_at == null ? null : Number(a.last_429_at || 0),
+    created_at: Number(a.created_at || Date.now()),
+  };
+}
+function normalizeAccountsStore(raw) {
+  const store = raw && typeof raw === "object" ? raw : {};
+  const accounts = Array.isArray(store.accounts) ? store.accounts.map(normalizeAccount).filter((a) => a.id) : [];
+  let active_id = store.active_id && accounts.some((a) => a.id === store.active_id) ? String(store.active_id) : null;
+  if (!active_id && accounts.length) active_id = accounts[0].id;
+  return { version: 1, accounts, active_id };
+}
+function loadAccounts(file = ACCT_FILE) {
+  try { return normalizeAccountsStore(JSON.parse(fs.readFileSync(file, "utf8"))); }
+  catch { return { version: 1, accounts: [], active_id: null }; }
+}
+function saveAccounts(store, file = ACCT_FILE) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(normalizeAccountsStore(store), null, 2), { mode: 0o600 });
+}
+function accountToLegacyCreds(account) {
+  const oauth = account && account.claudeAiOauth || {};
+  return {
+    access_token: oauth.accessToken || "",
+    refresh_token: oauth.refreshToken || "",
+    expires_at: Number(oauth.expiresAt || 0),
+  };
+}
+function accountAvailable(account, now = Date.now()) {
+  return !!account && account.status !== "disabled" && Number(account.cooldown_until || 0) <= now;
+}
+function pickAccount(store = loadAccounts(), now = Date.now(), excludeIds = new Set()) {
+  const accounts = (store && store.accounts) || [];
+  if (!accounts.length) return null;
+  const excluded = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+  const active = accounts.find((x) => x.id === store.active_id);
+  if (active && !excluded.has(active.id) && accountAvailable(active, now)) return active;
+  return accounts.find((x) => !excluded.has(x.id) && accountAvailable(x, now)) || null;
+}
+function maskedAccount(account) {
+  const a = normalizeAccount(account);
+  return {
+    ...a,
+    claudeAiOauth: {
+      accessToken: maskKey(a.claudeAiOauth.accessToken),
+      refreshToken: maskKey(a.claudeAiOauth.refreshToken),
+      expiresAt: a.claudeAiOauth.expiresAt,
+    },
+  };
+}
+function maskAccountsStore(store) {
+  const s = normalizeAccountsStore(store);
+  return { version: s.version, active_id: s.active_id, accounts: s.accounts.map(maskedAccount) };
+}
+function duplicateOrgError(orgUuid) {
+  const e = new Error(`org already in pool: ${orgUuid}`);
+  e.status = 409;
+  return e;
+}
+function buildAccountFromTokenResponse(t, opts = {}) {
+  const now = opts.now || Date.now();
+  const organization = t && typeof t.organization === "object" ? t.organization : {};
+  const account = t && typeof t.account === "object" ? t.account : {};
+  const subscription = t && typeof t.subscription === "object" ? t.subscription : {};
+  const plan = t && typeof t.plan === "object" ? t.plan : {};
+  const organization_uuid = firstUuid(
+    organization.uuid, organization.id, t && t.organization_uuid, t && t.org_uuid
+  ) || "unknown";
+  const organization_name = firstString(organization.name, organization.display_name, t && t.organization_name);
+  const account_uuid = firstUuid(account.uuid, account.id, t && t.account_uuid);
+  const email = firstString(account.email, t && t.email);
+  const expiresAt = now + (Number(t && t.expires_in) || 0) * 1000;
+  const label = firstString(opts.label, organization_name, email, organization_uuid === "unknown" ? "" : `Org ${organization_uuid.slice(-4)}`) || "Claude account";
+  return normalizeAccount({
+    id: opts.id || "",
+    label,
+    email,
+    organization_uuid,
+    organization_name,
+    account_uuid,
+    claudeAiOauth: {
+      accessToken: String(t && t.access_token || ""),
+      refreshToken: String(t && t.refresh_token || ""),
+      expiresAt,
+    },
+    scopes: normalizeScopes((t && (t.scopes || t.scope)) || opts.scopes),
+    subscriptionType: firstString(subscription.type, subscription.subscription_type, plan.type, t && t.subscriptionType, t && t.subscription_type),
+    rateLimitTier: firstString(t && t.rateLimitTier, t && t.rate_limit_tier, subscription.rateLimitTier, subscription.rate_limit_tier, plan.rateLimitTier, plan.rate_limit_tier),
+    status: "active",
+    cooldown_until: null,
+    cooldown_reason: null,
+    rate_limit_reset_at: null,
+    last_429_at: null,
+    created_at: now,
+  });
+}
+function addAccountToStore(store, account) {
+  const s = normalizeAccountsStore(store);
+  const org = account && account.organization_uuid;
+  const existing = (org && org !== "unknown") ? s.accounts.find((a) => a.organization_uuid === org) : null;
+  if (existing) {
+    // ponytail: re-login of an existing org REPLACES that account (refresh the token,
+    // keep id + label, clear cooldown) — so a stale-token re-login doesn't require
+    // Remove-first. ceiling: two concurrent re-logins of the same org race (last wins);
+    // per-account locks if throughput ever matters.
+    Object.assign(existing, normalizeAccount({ ...account, id: existing.id, label: existing.label }));
+    store.version = s.version;
+    store.accounts = s.accounts;
+    store.active_id = s.active_id;
+    return existing;
+  }
+  const a = normalizeAccount({ ...account, id: account.id || nextAccountId(s.accounts) });
+  s.accounts.push(a);
+  if (!s.active_id) s.active_id = a.id;
+  store.version = s.version;
+  store.accounts = s.accounts;
+  store.active_id = s.active_id;
+  return a;
+}
+function addTokenResponseToAccounts(t, opts = {}) {
+  const store = loadAccounts();
+  const account = buildAccountFromTokenResponse(t, opts);
+  const added = addAccountToStore(store, account);
+  saveAccounts(store);
+  return added;
+}
+function legacyCredsToAccount(creds, source) {
+  const o = creds && creds.claudeAiOauth ? creds.claudeAiOauth : null;
+  return normalizeAccount({
+    id: "acct_01",
+    label: source === "claude-code" ? "Claude Code login" : "Router OAuth login",
+    organization_uuid: null,
+    organization_name: null,
+    account_uuid: null,
+    claudeAiOauth: {
+      accessToken: String((o && o.accessToken) || (creds && creds.access_token) || ""),
+      refreshToken: String((o && o.refreshToken) || (creds && creds.refresh_token) || ""),
+      expiresAt: Number((o && o.expiresAt) || (creds && creds.expires_at) || 0),
+    },
+    status: "active",
+    created_at: Date.now(),
+  });
+}
+function oauthHeaders(token) {
+  return {
+    "authorization": `Bearer ${token}`,
+    "accept": "application/json, text/plain, */*",
+    "user-agent": "claude-cli/1.0.57 (external, cli)",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": "https://claude.ai/",
+    "origin": "https://claude.ai",
+  };
+}
+async function anthropicJson(url, token) {
+  const res = await anthropicFetch(url, { method: "GET", headers: oauthHeaders(token) });
+  const text = await res.text();
+  if (!res.ok) {
+    const e = new Error(`${res.status} ${text.slice(0, 300)}`);
+    e.status = res.status;
+    e.body = text;
+    throw e;
+  }
+  return text ? JSON.parse(text) : null;
+}
+function applyProfileToAccount(account, profile) {
+  if (!profile || typeof profile !== "object") return account;
+  const org = profile.organization || profile.active_organization || profile.current_organization || {};
+  const acct = profile.account || profile.user || {};
+  const orgUuid = firstUuid(org.uuid, org.id, profile.organization_uuid, profile.organizationId);
+  const orgName = firstString(org.name, org.display_name, profile.organization_name);
+  const accountUuid = firstUuid(acct.uuid, acct.id, profile.account_uuid, profile.accountId);
+  const email = firstString(acct.email, profile.email);
+  if (orgUuid) account.organization_uuid = orgUuid;
+  if (orgName) account.organization_name = orgName;
+  if (accountUuid) account.account_uuid = accountUuid;
+  if (email) account.email = email;
+  if ((!account.label || /^(Claude (Code login|account)|Router OAuth login)$/.test(account.label)) && (orgName || email)) account.label = orgName || email;
+  return account;
+}
+function parseOrganizations(payload) {
+  const list = Array.isArray(payload) ? payload : Array.isArray(payload && payload.organizations) ? payload.organizations : Array.isArray(payload && payload.data) ? payload.data : [];
+  return list.map((o) => ({
+    uuid: firstUuid(o && o.uuid, o && o.id, o && o.organization_uuid),
+    name: firstString(o && o.name, o && o.display_name, o && o.organization_name),
+  })).filter((o) => o.uuid);
+}
+async function recoverAccountProfile(account) {
+  const token = account && account.claudeAiOauth && account.claudeAiOauth.accessToken;
+  if (!token) return account;
+  try {
+    applyProfileToAccount(account, await anthropicJson(OAUTH_PROFILE_URL, token));
+    if (!account.organization_uuid) account.organization_uuid = "unknown";
+  } catch {
+    if (!account.organization_uuid) account.organization_uuid = "unknown";
+  }
+  return account;
+}
+async function migrateAccountsFromCreds() {
+  if (fs.existsSync(ACCT_FILE)) return loadAccounts();
+  const routerCreds = loadRouterCreds();
+  const source = routerCreds && routerCreds.access_token ? "router" : "claude-code";
+  const legacy = routerCreds && routerCreds.access_token ? routerCreds : loadClaudeCodeCreds();
+  if (!legacy || !legacy.access_token) return loadAccounts();
+  const store = { version: 1, accounts: [legacyCredsToAccount(legacy, source)], active_id: "acct_01" };
+  await recoverAccountProfile(store.accounts[0]);
+  saveAccounts(store);
+  return normalizeAccountsStore(store);
+}
+async function accountsForUse() {
+  if (fs.existsSync(ACCT_FILE)) return loadAccounts();
+  return migrateAccountsFromCreds();
+}
+async function refreshAccountInStore(store, account) {
+  const refreshToken = account && account.claudeAiOauth && account.claudeAiOauth.refreshToken;
+  if (!refreshToken) throw new Error("account has no refresh token");
+  const res = await anthropicFetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "claude-cli/1.0.56 (external, cli)",
+      "accept": "application/json, text/plain, */*",
+      "accept-language": "en-US,en;q=0.9",
+      "referer": "https://claude.ai/",
+      "origin": "https://claude.ai",
+    },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Refresh failed (${res.status}): ${text.slice(0, 300)}`);
+  const t = JSON.parse(text);
+  const updated = buildAccountFromTokenResponse({ ...t, refresh_token: t.refresh_token || refreshToken }, {
+    id: account.id,
+    label: account.label,
+    now: Date.now(),
+  });
+  Object.assign(account, {
+    email: updated.email || account.email,
+    organization_uuid: updated.organization_uuid !== "unknown" ? updated.organization_uuid : account.organization_uuid,
+    organization_name: updated.organization_name || account.organization_name,
+    account_uuid: updated.account_uuid || account.account_uuid,
+    claudeAiOauth: updated.claudeAiOauth,
+    scopes: updated.scopes.length ? updated.scopes : account.scopes,
+    subscriptionType: updated.subscriptionType || account.subscriptionType,
+    rateLimitTier: updated.rateLimitTier || account.rateLimitTier,
+  });
+  return account;
+}
+async function ensureAccountAccessToken(store, account, force = false) {
+  if (!account || !account.claudeAiOauth) return "";
+  if ((force || Date.now() > Number(account.claudeAiOauth.expiresAt || 0) - 60_000) && account.claudeAiOauth.refreshToken) {
+    await refreshAccountInStore(store, account);
+    saveAccounts(store);
+  }
+  return account.claudeAiOauth.accessToken;
+}
+async function listAccountOrganizations() {
+  const store = await accountsForUse();
+  const account = pickAccount(store);
+  if (!account) return { orgs: [], manual: true, error: "no available account token for organization lookup" };
+  const token = await ensureAccountAccessToken(store, account);
+  try {
+    return { orgs: parseOrganizations(await anthropicJson(ORGANIZATIONS_URL, token)) };
+  } catch (e) {
+    if (e.status === 403) return { orgs: [], manual: true, error: String(e.message || e) };
+    throw e;
+  }
+}
 
 // --- Codex CLI creds (READ-ONLY) ------------------------------------------------
 // The Codex CLI logs into the ChatGPT subscription and stores its OAuth token at
@@ -137,10 +493,19 @@ function makePkce() {
 // in-memory pending login (verifier + state), set by /login, consumed by /exchange
 let pending = null;
 
-function buildAuthorizeUrl() {
+function parseOAuthCode(raw) {
+  const s = String(raw || "").trim();
+  const hash = s.indexOf("#");
+  const code = (hash >= 0 ? s.slice(0, hash) : s).split("&")[0].trim();
+  const state = hash >= 0 ? s.slice(hash + 1).split("&")[0].trim() : "";
+  return { code, state };
+}
+
+function buildAuthorizeUrl(organization_uuid = null) {
   const { verifier, challenge } = makePkce();
   const state = b64url(crypto.randomBytes(32));
-  pending = { verifier, state };
+  const org = stringOrNull(organization_uuid);
+  pending = { verifier, state, organization_uuid: org };
   const q = new URLSearchParams({
     code: "true",
     client_id: CLIENT_ID,
@@ -151,18 +516,22 @@ function buildAuthorizeUrl() {
     code_challenge_method: "S256",
     state,
   });
-  return `${AUTHORIZE_URL}?${q}`;
+  const base = org ? `${ORG_AUTHORIZE_PREFIX}/${encodeURIComponent(org)}/authorize` : AUTHORIZE_URL;
+  return `${base}?${q}`;
 }
 
-async function exchangeCode(raw) {
+async function exchangeCode(raw, opts = {}) {
   if (!pending) throw new Error('No pending login — click "Login" first.');
   // CRS-aligned: clean the code (strip #fragment and &params), then exchange at
   // platform.claude.com (console.anthropic.com is dead — returns 403/404 post-migration).
   // The token endpoint fingerprint-checks the official client: it requires the
   // claude-cli User-Agent + an Origin/Referer of https://claude.ai, else 403.
   // Uses anthropicFetch (curl) — the token endpoint has the same TLS gate as /v1/messages.
-  const code = String(raw).trim().split("#")[0].split("&")[0];
+  const parsed = parseOAuthCode(raw);
+  const code = parsed.code;
   if (!code) throw new Error("Empty authorization code.");
+  if (opts.state && pending.state !== opts.state) throw new Error("OAuth state mismatch.");
+  if (parsed.state && pending.state !== parsed.state) throw new Error("OAuth state mismatch.");
   const res = await anthropicFetch(TOKEN_URL, {
     method: "POST",
     headers: {
@@ -185,12 +554,9 @@ async function exchangeCode(raw) {
   const text = await res.text();
   if (!res.ok) throw new Error(`Token exchange failed (${res.status}): ${text}`);
   const t = JSON.parse(text);
-  saveCreds({
-    access_token: t.access_token,
-    refresh_token: t.refresh_token,
-    expires_at: Date.now() + (Number(t.expires_in) || 0) * 1000,
-  });
+  const account = addTokenResponseToAccounts(t, { label: opts.label });
   pending = null;
+  return account;
 }
 
 async function refreshCreds(creds) {
@@ -226,6 +592,13 @@ async function refreshCreds(creds) {
 // refresh if within 60s of expiry. For read-only Claude-Code-reused creds, never
 // refresh (the CLI does it) — just re-read the file if it looks expired.
 async function getAccessToken() {
+  const store = await accountsForUse();
+  if (store.accounts.length) {
+    const account = pickAccount(store);
+    if (!account) return null;
+    try { return await ensureAccountAccessToken(store, account); }
+    catch { return null; }
+  }
   let c = loadCreds();
   if (!c || !c.access_token) return null;
   if (c.read_only) {
@@ -256,9 +629,11 @@ const CC_DEFAULT_HEADERS = {
   "x-stainless-arch": "x64",
   "x-stainless-runtime": "node",
   "x-stainless-runtime-version": "v20.19.2",
-  "anthropic-dangerous-direct-browser-access": "true",
+  // anthropic-dangerous-direct-browser-access DROPPED: real CC CLI does NOT send it on
+  // OAuth (CLIProxyAPI comment) — it's API-key-mode only; sending it on OAuth trips the
+  // 429 soft-block body-content classifier.
   "x-app": "cli",
-  "user-agent": "claude-cli/1.0.57 (external, cli)",
+  "user-agent": "claude-cli/2.1.191 (external, cli)",
   "accept-language": "*",
   "sec-fetch-mode": "cors",
 };
@@ -668,6 +1043,74 @@ async function throttledBackendFetch(backend, fetcher) {
     await sleep(throttleBackoffMs(attempt, cfg, retryAfter));
     attempt++;
   }
+}
+
+function parseResetAt(value, now = Date.now()) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) {
+    if (n > 1e12) return n;
+    if (n > 1e9) return n * 1000;
+    return now + n * 1000;
+  }
+  const d = Date.parse(raw);
+  return Number.isFinite(d) ? d : null;
+}
+function unavailableAccountsPayload() {
+  return { error: { type: "proxy_error", message: "claude-router: all accounts cooling/disabled. Retry shortly or enable an account in the webui." } };
+}
+async function safeReadText(resp) {
+  try { return resp && typeof resp.text === "function" ? await resp.text() : ""; }
+  catch { return ""; }
+}
+function sendUpstreamText(res, up, text) {
+  const ct = headerGet(up.headers, "content-type") || "application/json";
+  res.writeHead(up.status, { "content-type": ct });
+  res.end(text || "");
+}
+function setAccountCooldown(account, patch) {
+  Object.assign(account, patch);
+  return true;
+}
+function applyAccountFailure(store, account, status, headers, bodyText = "", now = Date.now()) {
+  if (!account) return false;
+  if (status === 429) {
+    const reset = parseResetAt(headerGet(headers, "anthropic-ratelimit-unified-reset"), now);
+    setAccountCooldown(account, {
+      status: "cooldown",
+      cooldown_until: reset || now + 300_000,
+      cooldown_reason: "429_quota",
+      rate_limit_reset_at: reset || null,
+      last_429_at: now,
+    });
+    return true;
+  }
+  if (status === 529) {
+    setAccountCooldown(account, {
+      status: "cooldown",
+      cooldown_until: now + 600_000,
+      cooldown_reason: "529_overload",
+    });
+    return true;
+  }
+  if (status === 401 || status === 403) {
+    setAccountCooldown(account, {
+      status: "cooldown",
+      cooldown_until: now + 1_800_000,
+      cooldown_reason: "auth",
+    });
+    return true;
+  }
+  if (status === 400 && /organization disabled|account disabled|not found|invalid account|Too many active sessions/i.test(bodyText || "")) {
+    setAccountCooldown(account, {
+      status: "disabled",
+      cooldown_until: now + 600_000,
+      cooldown_reason: "blocked",
+    });
+    return true;
+  }
+  return false;
 }
 
 function mergeBetas(clientBeta) {
@@ -1510,13 +1953,18 @@ function openaiResponsesModelForBackend(backend, requestedModel) {
   return (backend.modelMap && backend.modelMap[requestedModel]) || requestedModel;
 }
 async function openaiResponsesTranslate(req, res, backend, body) {
-  if (!body || !body.model) return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
+  const logId = req._requestLogId;
+  if (!body || !body.model) {
+    markLogFinished(res, logId, { status: "error", httpStatus: 400, errorPreview: "router: missing body.model" });
+    return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
+  }
   let upstream;
   try { upstream = openaiResponsesUpstreamForBackend(backend); }
-  catch (e) { return sendJson(res, 500, { error: { type: "configuration_error", message: String(e.message || e) } }); }
+  catch (e) { markLogFinished(res, logId, { status: "error", httpStatus: 500, errorPreview: String(e.message || e) }); return sendJson(res, 500, { error: { type: "configuration_error", message: String(e.message || e) } }); }
   const model = openaiResponsesModelForBackend(backend, body.model);
 
   if (req.url.startsWith("/v1/messages/count_tokens")) {
+    markLogFinished(res, logId, { status: "success", httpStatus: 200, upstreamModel: model });
     return sendJson(res, 200, openaiCountTokensResponse(body));
   }
 
@@ -1527,16 +1975,23 @@ async function openaiResponsesTranslate(req, res, backend, body) {
   // for codexOauth. A bearer openai-responses backend against the standard
   // api.openai.com/v1/responses keeps max_output_tokens (the Responses API accepts it).
   if (backend.codexOauth) delete rBody.max_output_tokens;
+  requestLog.update(logId, { upstreamModel: model, upstream, authScheme: backend.codexOauth ? "codex-oauth" : "bearer" });
+  requestLog.trace(logId, { requestBody: body, transformedBody: rBody });
+  watchClientAbort(res, logId);
 
   let bearer;
   if (backend.codexOauth) {
     const creds = loadCodexCreds();
     if (!creds || !creds.access_token) {
+      markLogFinished(res, logId, { status: "error", httpStatus: 401, errorPreview: "codex not logged in (no ~/.codex/auth.json)" });
       return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: codex not logged in — run \`codex login\` first (no ~/.codex/auth.json).` } });
     }
     bearer = creds.access_token;
   } else {
-    if (!backend.apiKey) return sendJson(res, 401, { error: { type: "authentication_error", message: `${backend.id}: missing API key` } });
+    if (!backend.apiKey) {
+      markLogFinished(res, logId, { status: "error", httpStatus: 401, errorPreview: `${backend.id}: missing API key` });
+      return sendJson(res, 401, { error: { type: "authentication_error", message: `${backend.id}: missing API key` } });
+    }
     bearer = backend.apiKey;
   }
 
@@ -1554,10 +2009,12 @@ async function openaiResponsesTranslate(req, res, backend, body) {
   try {
     up = await anthropicFetch(upstream, { method: "POST", headers, body: JSON.stringify(rBody) });
   } catch (e) {
+    markLogFinished(res, logId, { status: "error", errorPreview: `${backend.id}: ${String(e)}` });
     return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
   }
   if (!up.ok) {
     const text = await up.text();
+    markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: `upstream ${up.status}: ${text.slice(0, 300)}` });
     return sendJson(res, up.status, { error: { type: "api_error", message: `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}` } });
   }
 
@@ -1565,18 +2022,36 @@ async function openaiResponsesTranslate(req, res, backend, body) {
   const iter = (async function* () { for (;;) { const { done, value } = await reader.read(); if (done) break; yield value; } })();
 
   if (isStream) {
+    requestLog.update(logId, { status: "streaming", httpStatus: 200 });
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" });
+    let streamErr = null;
+    let acc = "";
+    const CAP = 65536;
     try {
-      for await (const block of openaiResponsesSseToAnthropicSse(iter, body.model)) res.write(block);
+      for await (const block of openaiResponsesSseToAnthropicSse(iter, body.model)) {
+        res.write(block);
+        if (acc.length < CAP) { acc += block; if (acc.length > CAP) acc = acc.slice(0, CAP); }
+      }
     } catch (e) {
-      res.write(sseBlock("error", { type: "error", error: { type: "api_error", message: String(e) } }));
+      streamErr = String(e);
+      const errBlock = sseBlock("error", { type: "error", error: { type: "api_error", message: String(e) } });
+      res.write(errBlock);
+      if (acc.length < CAP) acc += errBlock;
     }
+    const patch = streamErr
+      ? { status: "error", httpStatus: 200, errorPreview: streamErr, ...requestLogPatchFromAnthropicSseText(acc) }
+      : { status: "success", httpStatus: 200, ...requestLogPatchFromAnthropicSseText(acc) };
+    requestLog.trace(logId, { sseEventsPreview: acc.split("\n\n").filter(Boolean).slice(0, 40).map((b) => b.slice(0, 800)) });
+    markLogFinished(res, logId, patch);
     res.end();
   } else {
     try {
       const anth = await openaiResponsesToAnthropicResponse(iter, body.model);
+      requestLog.trace(logId, { responseBody: anth });
+      markLogFinished(res, logId, { status: "success", httpStatus: 200, ...anthropicUsageFromResponse(anth) });
       sendJson(res, 200, anth);
     } catch (e) {
+      markLogFinished(res, logId, { status: "error", httpStatus: 502, errorPreview: `${backend.id}: ${String(e)}` });
       sendJson(res, 502, { error: { type: "api_error", message: `${backend.id}: ${String(e)}` } });
     }
   }
@@ -1584,16 +2059,24 @@ async function openaiResponsesTranslate(req, res, backend, body) {
 
 // --- proxy wiring: openai-format backend (plain fetch — no TLS gate on GLM/codex) -
 async function openaiTranslate(req, res, backend, body) {
-  if (!body || !body.model) return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
+  const logId = req._requestLogId;
+  if (!body || !body.model) {
+    markLogFinished(res, logId, { status: "error", httpStatus: 400, errorPreview: "router: missing body.model" });
+    return sendJson(res, 400, { error: { type: "invalid_request_error", message: "router: missing body.model" } });
+  }
   const model = (backend.modelMap && backend.modelMap[body.model]) || body.model;
 
   if (req.url.startsWith("/v1/messages/count_tokens")) {
+    markLogFinished(res, logId, { status: "success", httpStatus: 200, upstreamModel: model });
     return sendJson(res, 200, openaiCountTokensResponse(body));
   }
 
   const isStream = !!body.stream;
   const oaiBody = anthropicToOpenaiBody({ ...body, model });
   const url = backend.upstream + "/chat/completions";
+  requestLog.update(logId, { upstreamModel: model, upstream: url });
+  requestLog.trace(logId, { requestBody: body, transformedBody: oaiBody });
+  watchClientAbort(res, logId);
   const headers = { "content-type": "application/json", "authorization": `Bearer ${backend.apiKey}` };
   if (isStream) headers.accept = "text/event-stream";
 
@@ -1601,27 +2084,74 @@ async function openaiTranslate(req, res, backend, body) {
   try {
     up = await throttledBackendFetch(backend, () => fetch(url, { method: "POST", headers, body: JSON.stringify(oaiBody) }));
   } catch (e) {
+    markLogFinished(res, logId, { status: "error", errorPreview: `${backend.id}: ${String(e)}` });
     return sendJson(res, 502, { error: { type: "proxy_error", message: `${backend.id}: ${String(e)}` } });
   }
   if (!up.ok) {
     const text = await up.text();
+    markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: `upstream ${up.status}: ${text.slice(0, 300)}` });
     return sendJson(res, up.status, { error: { type: "api_error", message: `${backend.id} upstream ${up.status}: ${text.slice(0, 500)}` } });
   }
 
   if (isStream) {
+    requestLog.update(logId, { status: "streaming", httpStatus: 200 });
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" });
+    let streamErr = null;
+    let acc = "";
+    const CAP = 65536;
     try {
       const reader = up.body.getReader();
       const iter = (async function* () { for (;;) { const { done, value } = await reader.read(); if (done) break; yield value; } })();
-      for await (const block of openaiSseToAnthropicSse(iter, body.model)) res.write(block);
+      for await (const block of openaiSseToAnthropicSse(iter, body.model)) {
+        res.write(block);
+        if (acc.length < CAP) { acc += block; if (acc.length > CAP) acc = acc.slice(0, CAP); }
+      }
     } catch (e) {
-      res.write(sseBlock("error", { type: "error", error: { type: "api_error", message: String(e) } }));
+      streamErr = String(e);
+      const errBlock = sseBlock("error", { type: "error", error: { type: "api_error", message: String(e) } });
+      res.write(errBlock);
+      if (acc.length < CAP) acc += errBlock;
     }
+    const patch = streamErr
+      ? { status: "error", httpStatus: 200, errorPreview: streamErr, ...requestLogPatchFromAnthropicSseText(acc) }
+      : { status: "success", httpStatus: 200, ...requestLogPatchFromAnthropicSseText(acc) };
+    requestLog.trace(logId, { sseEventsPreview: acc.split("\n\n").filter(Boolean).slice(0, 40).map((b) => b.slice(0, 800)) });
+    markLogFinished(res, logId, patch);
     res.end();
   } else {
     const json = await up.json();
-    sendJson(res, 200, openaiToAnthropicResponse(json, body.model));
+    const anth = openaiToAnthropicResponse(json, body.model);
+    requestLog.trace(logId, { responseBody: anth });
+    markLogFinished(res, logId, { status: "success", httpStatus: 200, ...anthropicUsageFromResponse(anth) });
+    sendJson(res, 200, anth);
   }
+}
+
+// Remove unsigned thinking blocks from assistant history before sending to Claude.
+// Cross-backend contamination: GLM/Codex emit thinking blocks with signature:"" (no
+// valid Anthropic signature). When a conversation later routes to real Claude, Claude
+// rejects them with 400 "Invalid signature in thinking block". We drop thinking/
+// redacted_thinking blocks lacking a non-empty signature; if that empties an assistant
+// turn, fall back to a minimal text block so the turn stays structurally valid.
+function sanitizeThinkingForClaude(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const out = messages.map((m) => {
+    if (!m || m.role !== "assistant" || !Array.isArray(m.content)) return m;
+    let dropped = false;
+    const content = m.content.filter((c) => {
+      if (c && (c.type === "thinking" || c.type === "redacted_thinking")) {
+        const sig = typeof c.signature === "string" ? c.signature : "";
+        if (!sig) { dropped = true; return false; } // unsigned → drop
+      }
+      return true;
+    });
+    if (!dropped) return m;
+    changed = true;
+    const safe = content.length ? content : [{ type: "text", text: "" }];
+    return { ...m, content: safe };
+  });
+  return changed ? out : messages;
 }
 
 // --- per-backend anthropic passthrough (reuses header helpers; anthropicFetch) ---
@@ -1629,32 +2159,530 @@ async function openaiTranslate(req, res, backend, body) {
 // fallback) for the upstream call — NOT plain fetch — or the subscription-OAuth 403
 // (TLS-fingerprint gate) returns.
 async function anthropicPassthrough(req, res, backend, body) {
+  const logId = req._requestLogId;
+  const isStream = !!(body && body.stream);
   const model = (body && backend.modelMap && backend.modelMap[body.model]) || (body && body.model);
   let sendBody = req._rawBody;                                  // raw bytes by default
-  if (body && model && model !== body.model) {
+  let urlQuery = "";
+  // OAuth subscription path: Anthropic's 429 soft-block is a BODY-CONTENT gate — the
+  // literal Claude-Code identity sentence MUST be the first system block (vellum-oauth-proxy /
+  // CLIProxyAPI / openclaw / horselock all inject this on stock HTTP). x-api-key anthropic
+  // backends passthrough unchanged.
+  if (body && backend.authScheme === "oauth") {
+    const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+    let sys;
+    if (Array.isArray(body.system)) sys = body.system.slice();
+    else if (typeof body.system === "string") sys = body.system ? [{ type: "text", text: body.system }] : [];
+    else sys = [];
+    const hasIdentity = sys.some((b) => b && b.type === "text" && typeof b.text === "string" && b.text.includes(IDENTITY));
+    if (!hasIdentity) sys = [{ type: "text", text: IDENTITY }, ...sys];
+    // Strip UNSIGNED thinking blocks from assistant history before sending to Claude.
+    // GLM/Codex emit thinking blocks with signature:"" — when the conversation later
+    // routes to real Claude (opus), Claude validates the signature and 400s with
+    // "Invalid signature in thinking block" (messages.N.content.0). Drop thinking/
+    // redacted_thinking blocks that lack a non-empty signature; keep signed ones.
+    const cleanMessages = sanitizeThinkingForClaude(body.messages);
+    sendBody = Buffer.from(JSON.stringify({ ...body, model: model || body.model, system: sys, messages: cleanMessages }));
+    if (req.url === "/v1/messages") urlQuery = "?beta=true"; // gateway-protocol: inference posts to /v1/messages?beta=true
+  } else if (body && model && model !== body.model) {
     sendBody = Buffer.from(JSON.stringify({ ...body, model })); // cheap rewrite for modelMap
   }
-  const url = backend.upstream + req.url;                       // /v1/messages | /v1/messages/count_tokens
-  let headers;
-  if (backend.authScheme === "oauth") {
-    const token = await getAccessToken();                       // existing refresh logic
-    if (!token) return sendJson(res, 401, { error: { type: "authentication_error", message: `claude-router: not logged in. Open http://${HOST}:${boundPort}/ and click Login.` } });
-    headers = headersOAuth(req.headers, token);                 // existing
-  } else { // x-api-key
-    headers = headersKey(req.headers, backend.apiKey);          // existing
+  const url = backend.upstream + req.url + urlQuery;             // /v1/messages[?beta=true] | /v1/messages/count_tokens
+  requestLog.update(logId, { upstream: url, upstreamModel: model || (body && body.model) || null });
+  if (body) requestLog.trace(logId, { requestBody: body, transformedBody: (() => { try { return sendBody && sendBody.length ? JSON.parse(sendBody.toString("utf8")) : null; } catch { return null; } })() });
+  watchClientAbort(res, logId);
+  // curl (anthropicFetch) only for TLS-gated hosts (api.anthropic.com / platform.claude.com);
+  // non-Anthropic anthropic-format backends (DashScope GLM etc.) must use plain fetch —
+  // dashscope throttles curl with 429 "Throttling" (curl→429 ~5s, Node fetch→200 ~5s, same key).
+  let upHost = ""; try { upHost = new URL(backend.upstream).hostname; } catch {}
+  const upFetch = (backend.authScheme === "oauth" || upHost === "api.anthropic.com" || upHost === "platform.claude.com") ? anthropicFetch : fetch;
+  const doFetch = (hdrs) => upFetch(url, { method: req.method, headers: hdrs, body: sendBody && sendBody.length ? sendBody : undefined });
+  if (backend.authScheme !== "oauth") {
+    const headers = headersKey(req.headers, backend.apiKey);
+    let up;
+    try { up = await throttledBackendFetch(backend, () => doFetch(headers)); }
+    catch (e) { markLogFinished(res, logId, { status: "error", errorPreview: String(e) }); return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } }); }
+    return streamUpstream(res, up, { id: logId, isStream });
   }
-  const doFetch = (hdrs) => anthropicFetch(url, { method: req.method, headers: hdrs, body: sendBody && sendBody.length ? sendBody : undefined });
-  let up;
-  try { up = await throttledBackendFetch(backend, () => doFetch(headers)); }
-  catch (e) { return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } }); }
-  // token rejected mid-flight → force one refresh + retry (oauth only)
-  if (up.status === 401 && backend.authScheme === "oauth") {
-    const c = loadCreds();
-    if (c && c.refresh_token) {
-      try { const c2 = await refreshCreds(c); up = await doFetch(headersOAuth(req.headers, c2.access_token)); } catch {}
+
+  let store = await accountsForUse();
+  if (!store.accounts.length) { markLogFinished(res, logId, { status: "error", httpStatus: 503, errorPreview: "no accounts available" }); return sendJson(res, 503, unavailableAccountsPayload()); }
+
+  const tried = new Set();
+  for (let rotateAttempt = 0; rotateAttempt < MAX_ROTATE_RETRIES; rotateAttempt++) {
+    store = await accountsForUse();
+    const account = pickAccount(store, Date.now(), tried);
+    if (!account) { markLogFinished(res, logId, { status: "error", httpStatus: 503, errorPreview: "no account available", rotationCount: rotateAttempt }); return sendJson(res, 503, unavailableAccountsPayload()); }
+    requestLog.update(logId, { accountId: account.id, organizationName: account.organization_name || null, organizationUuid: account.organization_uuid || null, rotationCount: rotateAttempt });
+
+    let up;
+    try {
+      const token = await ensureAccountAccessToken(store, account);
+      if (!token) {
+        applyAccountFailure(store, account, 401, {}, "", Date.now());
+        saveAccounts(store);
+        tried.add(account.id);
+        continue;
+      }
+      up = await throttledBackendFetch(backend, () => doFetch(headersOAuth(req.headers, token)));
+    } catch (e) {
+      markLogFinished(res, logId, { status: "error", errorPreview: String(e) });
+      return sendJson(res, 502, { error: { type: "proxy_error", message: String(e) } });
     }
+
+    if (up.status === 401 || up.status === 403) {
+      const refreshTries = up.status === 403 ? 2 : 1;
+      for (let i = 0; i < refreshTries && (up.status === 401 || up.status === 403); i++) {
+        await safeReadText(up);
+        try {
+          const refreshedToken = await ensureAccountAccessToken(store, account, true);
+          up = await throttledBackendFetch(backend, () => doFetch(headersOAuth(req.headers, refreshedToken)));
+        } catch {
+          break;
+        }
+      }
+    }
+
+    if (up.status === 400) {
+      const text = await safeReadText(up);
+      if (applyAccountFailure(store, account, up.status, up.headers, text, Date.now())) {
+        saveAccounts(store);
+        tried.add(account.id);
+        continue;
+      }
+      markLogFinished(res, logId, { status: "error", httpStatus: 400, errorPreview: String(text).slice(0, 300) });
+      return sendUpstreamText(res, up, text);
+    }
+
+    if (up.status === 429 || up.status === 529 || up.status === 401 || up.status === 403) {
+      const text = await safeReadText(up);
+      applyAccountFailure(store, account, up.status, up.headers, text, Date.now());
+      saveAccounts(store);
+      tried.add(account.id);
+      requestLog.update(logId, { errorPreview: `acct ${account.id} → ${up.status}, rotating` });
+      continue;
+    }
+
+    return streamUpstream(res, up, { id: logId, isStream });
   }
-  await streamUpstream(res, up);                                // existing
+
+  markLogFinished(res, logId, { status: "error", httpStatus: 503, errorPreview: "all accounts exhausted" });
+  return sendJson(res, 503, unavailableAccountsPayload());
+}
+
+// --- request inspector: settings + redaction ------------------------------------
+// All inspector state lives under CFG_DIR. The hard rule everywhere below: logging is
+// best-effort. Every public entry point of `requestLog` is wrapped so a thrown error
+// (disk full, bad JSON, EPERM) is swallowed — a user's /v1/messages request must never
+// fail because the audit log could not be written.
+const REQUEST_SETTINGS_DEFAULTS = {
+  fullTraceEnabled: false,
+  promptPreviewChars: 1000,
+  maxRecentRequests: 1000,
+  maxTraceFiles: 200,
+  maxLogBytes: 26214400, // 25 MiB
+};
+function sanitizeRequestSettings(raw) {
+  const s = { ...REQUEST_SETTINGS_DEFAULTS };
+  if (raw && typeof raw === "object") {
+    if (typeof raw.fullTraceEnabled === "boolean") s.fullTraceEnabled = raw.fullTraceEnabled;
+    s.promptPreviewChars = clampInt(raw.promptPreviewChars, s.promptPreviewChars, 100, 5000);
+    s.maxRecentRequests = clampInt(raw.maxRecentRequests, s.maxRecentRequests, 50, 5000);
+    s.maxTraceFiles = clampInt(raw.maxTraceFiles, s.maxTraceFiles, 0, 1000);
+    s.maxLogBytes = clampInt(raw.maxLogBytes, s.maxLogBytes, 1048576, 209715200); // 1MB–200MB
+  }
+  return s;
+}
+function loadRequestSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(REQUEST_SETTINGS_FILE, "utf8"));
+    return sanitizeRequestSettings(raw);
+  } catch { return { ...REQUEST_SETTINGS_DEFAULTS }; }
+}
+function saveRequestSettings(settings) {
+  const clean = sanitizeRequestSettings(settings);
+  fs.mkdirSync(CFG_DIR, { recursive: true });
+  fs.writeFileSync(REQUEST_SETTINGS_FILE, JSON.stringify(clean, null, 2), { mode: 0o600 });
+  return clean;
+}
+
+// Keys whose values are secrets regardless of content.
+const SECRET_KEY_RE = /^(authorization|x-api-key|apikey|api_key|anthropic[-_]auth[-_]token|access[-_]?token|refresh[-_]?token|client[-_]?secret|cookie|set-cookie|password|secret)$/i;
+// Auth-ish key names where a long opaque token-looking value should also be masked.
+const AUTHISH_KEY_RE = /(authorization|token|secret|key|bearer|credential)/i;
+const REDACTED = "[REDACTED]";
+function redactSecretString(s) {
+  if (typeof s !== "string" || !s) return s;
+  let out = s;
+  // sk-..., sk-ant-..., and other provider-prefixed secret tokens
+  out = out.replace(/\b(sk|sk-ant|sk-proj|gsk|ya29|ghp|github_pat)[-_][A-Za-z0-9_-]{8,}/g, REDACTED);
+  // Bearer <token>
+  out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]{10,}/gi, "Bearer " + REDACTED);
+  return out;
+}
+// Recursively redact secrets in strings / arrays / objects. Never throws.
+function redactSecrets(value, keyName = "") {
+  try {
+    if (value == null) return value;
+    if (typeof value === "string") {
+      if (keyName && SECRET_KEY_RE.test(keyName)) return REDACTED;
+      if (keyName && AUTHISH_KEY_RE.test(keyName) && /^[A-Za-z0-9_.\-+/=~]{40,}$/.test(value)) return REDACTED;
+      return redactSecretString(value);
+    }
+    if (Array.isArray(value)) return value.map((v) => redactSecrets(v, keyName));
+    if (typeof value === "object") {
+      const out = {};
+      for (const k of Object.keys(value)) {
+        if (SECRET_KEY_RE.test(k)) { out[k] = REDACTED; continue; }
+        out[k] = redactSecrets(value[k], k);
+      }
+      return out;
+    }
+    return value;
+  } catch { return REDACTED; }
+}
+
+// Build a short, redacted, human-readable preview of the request prompt.
+function buildPromptPreview(body, maxChars) {
+  try {
+    if (!body || typeof body !== "object") return "";
+    const parts = [];
+    const pushText = (label, content) => {
+      if (typeof content === "string") { if (content.trim()) parts.push(`${label}: ${content.trim()}`); return; }
+      if (Array.isArray(content)) {
+        const text = content.map((b) => {
+          if (typeof b === "string") return b;
+          if (b && typeof b === "object") {
+            if (typeof b.text === "string") return b.text;
+            if (b.type === "image") return "[image]";
+            if (b.type === "tool_use") return `[tool_use ${b.name || ""}]`;
+            if (b.type === "tool_result") return "[tool_result]";
+          }
+          return "";
+        }).filter(Boolean).join(" ");
+        if (text.trim()) parts.push(`${label}: ${text.trim()}`);
+      }
+    };
+    if (body.system) pushText("System", body.system);
+    if (Array.isArray(body.messages)) {
+      for (const m of body.messages) {
+        if (!m || typeof m !== "object") continue;
+        const role = m.role === "assistant" ? "Assistant" : m.role === "system" ? "System" : "User";
+        pushText(role, m.content);
+      }
+    } else if (Array.isArray(body.input)) {
+      // Responses-style payloads land here as a fallback.
+      for (const m of body.input) { if (m && typeof m === "object") pushText(m.role === "assistant" ? "Assistant" : "User", m.content); }
+    } else if (typeof body.prompt === "string") {
+      pushText("Prompt", body.prompt);
+    }
+    let preview = parts.join("\n");
+    preview = redactSecretString(preview);
+    const cap = clampInt(maxChars, REQUEST_SETTINGS_DEFAULTS.promptPreviewChars, 100, 5000);
+    if (preview.length > cap) preview = preview.slice(0, cap) + "…";
+    return preview;
+  } catch { return ""; }
+}
+
+// --- request inspector: log store ------------------------------------------------
+const requestLog = {
+  recent: [],
+  settings: loadRequestSettings(),
+  _seq: 0,
+
+  reloadSettings() { try { this.settings = loadRequestSettings(); } catch {} return this.settings; },
+
+  // Path resolvers — default to module constants but honor `this._dir` (used by selftest
+  // to isolate file I/O into a temp directory without touching ~/.claude-router).
+  _dir: null,
+  _baseDir() { return this._dir || CFG_DIR; },
+  _logFile() { return this._dir ? path.join(this._dir, "requests.jsonl") : REQUEST_LOG_FILE; },
+  _logFile1() { return this._dir ? path.join(this._dir, "requests.1.jsonl") : REQUEST_LOG_FILE_1; },
+  _traceDir() { return this._dir ? path.join(this._dir, "request-traces") : REQUEST_TRACE_DIR; },
+
+  _newId() {
+    const d = new Date();
+    const p = (n, w = 2) => String(n).padStart(w, "0");
+    const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    const rand = crypto.randomBytes(4).toString("hex");
+    return `req_${stamp}_${rand}`;
+  },
+
+  // Begin tracking a request. Returns an id (or null if everything failed).
+  start(req, body, backend) {
+    try {
+      const now = Date.now();
+      const id = this._newId();
+      const rec = {
+        id,
+        startedAt: now,
+        finishedAt: null,
+        latencyMs: null,
+        method: (req && req.method) || "POST",
+        path: (req && req.url ? String(req.url).split("?")[0] : ""),
+        stream: !!(body && body.stream),
+        requestedModel: (body && body.model) || null,
+        upstreamModel: null,
+        backendId: backend ? backend.id : null,
+        backendName: backend ? (backend.name || backend.id) : null,
+        backendFormat: backend ? backend.format : null,
+        authScheme: backend ? (backend.authScheme || (backend.codexOauth ? "codex-oauth" : "bearer")) : null,
+        upstream: null,
+        accountId: null,
+        organizationName: null,
+        organizationUuid: null,
+        status: "pending",
+        httpStatus: null,
+        stopReason: null,
+        usage: null,
+        promptPreview: buildPromptPreview(body, this.settings.promptPreviewChars),
+        errorPreview: "",
+        retryCount: 0,
+        rotationCount: 0,
+        traceAvailable: false,
+      };
+      this.recent.push(rec);
+      const cap = clampInt(this.settings.maxRecentRequests, REQUEST_SETTINGS_DEFAULTS.maxRecentRequests, 50, 5000);
+      while (this.recent.length > cap) this.recent.shift();
+      return id;
+    } catch { return null; }
+  },
+
+  _find(id) { if (!id) return null; for (let i = this.recent.length - 1; i >= 0; i--) if (this.recent[i].id === id) return this.recent[i]; return null; },
+
+  // Patch an in-memory record without persisting (used during pending/streaming).
+  update(id, patch) {
+    try { const rec = this._find(id); if (rec && patch) Object.assign(rec, patch); } catch {}
+  },
+
+  get(id) {
+    const rec = this._find(id);
+    if (rec) return rec;
+    // best-effort tail scan of jsonl (+ rotated) for an evicted record
+    try {
+      for (const file of [this._logFile(), this._logFile1()]) {
+        if (!fs.existsSync(file)) continue;
+        const lines = fs.readFileSync(file, "utf8").split("\n");
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          try { const obj = JSON.parse(line); if (obj && obj.id === id) return obj; } catch {}
+        }
+      }
+    } catch {}
+    return null;
+  },
+
+  // Finalize a record: set terminal status + latency, persist one JSONL line.
+  finish(id, patch) {
+    try {
+      const rec = this._find(id);
+      if (!rec) return;
+      if (patch) Object.assign(rec, patch);
+      if (rec.finishedAt == null) rec.finishedAt = Date.now();
+      if (rec.latencyMs == null) rec.latencyMs = Math.max(0, rec.finishedAt - rec.startedAt);
+      if (typeof rec.errorPreview === "string" && rec.errorPreview.length > 600) rec.errorPreview = rec.errorPreview.slice(0, 600);
+      this._append(rec);
+    } catch {}
+  },
+
+  _append(rec) {
+    try {
+      fs.mkdirSync(this._baseDir(), { recursive: true });
+      this._rotateIfNeeded();
+      fs.appendFileSync(this._logFile(), JSON.stringify(rec) + "\n", { mode: 0o600 });
+    } catch {}
+  },
+
+  _rotateIfNeeded() {
+    try {
+      const max = clampInt(this.settings.maxLogBytes, REQUEST_SETTINGS_DEFAULTS.maxLogBytes, 1048576, 209715200);
+      let size = 0;
+      try { size = fs.statSync(this._logFile()).size; } catch { return; }
+      if (size < max) return;
+      try { fs.unlinkSync(this._logFile1()); } catch {}
+      fs.renameSync(this._logFile(), this._logFile1());
+    } catch {}
+  },
+
+  // Write/merge an optional full trace file (only when full trace is enabled).
+  trace(id, patch) {
+    try {
+      if (!this.settings.fullTraceEnabled || !id || !patch) return;
+      const dir = this._traceDir();
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${id}.json`);
+      let existing = {};
+      try { existing = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+      const merged = { id, ...existing };
+      for (const k of Object.keys(patch)) merged[k] = redactSecrets(patch[k], k);
+      fs.writeFileSync(file, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      this.update(id, { traceAvailable: true });
+      this._pruneTraces();
+    } catch {}
+  },
+
+  getTrace(id) {
+    try {
+      if (!id || !/^req_[A-Za-z0-9_]+$/.test(id)) return null; // guard path traversal
+      const file = path.join(this._traceDir(), `${id}.json`);
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch { return null; }
+  },
+
+  _pruneTraces() {
+    try {
+      const cap = clampInt(this.settings.maxTraceFiles, REQUEST_SETTINGS_DEFAULTS.maxTraceFiles, 0, 1000);
+      const dir = this._traceDir();
+      let files = [];
+      try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { return; }
+      if (files.length <= cap) return;
+      const withTime = files.map((f) => {
+        let mtime = 0; try { mtime = fs.statSync(path.join(dir, f)).mtimeMs; } catch {}
+        return { f, mtime };
+      }).sort((a, b) => a.mtime - b.mtime); // oldest first
+      for (let i = 0; i < withTime.length - cap; i++) {
+        try { fs.unlinkSync(path.join(dir, withTime[i].f)); } catch {}
+      }
+    } catch {}
+  },
+
+  // Filtered, newest-first view of the in-memory buffer + summary stats.
+  list(filters = {}) {
+    const { status, backend, model, q, limit } = filters || {};
+    // absent/empty limit → use the full buffer cap (NOT 1). clampInt(null,…) would
+    // coerce null→0→1, collapsing the list to a single row — the "only one request"
+    // bug. Only honor an explicit positive limit.
+    const hasLimit = limit != null && String(limit).trim() !== "" && Number.isFinite(Number(limit)) && Number(limit) > 0;
+    const cap = hasLimit ? clampInt(limit, this.settings.maxRecentRequests, 1, 5000) : 5000;
+    const qLower = q ? String(q).toLowerCase() : "";
+    const modelLower = model ? String(model).toLowerCase() : "";
+    let rows = this.recent.slice();
+    rows.reverse(); // newest first
+    const filtered = rows.filter((r) => {
+      if (status && r.status !== status) return false;
+      if (backend && r.backendId !== backend) return false;
+      if (modelLower) {
+        const m = `${r.requestedModel || ""} ${r.upstreamModel || ""}`.toLowerCase();
+        if (!m.includes(modelLower)) return false;
+      }
+      if (qLower && !String(r.promptPreview || "").toLowerCase().includes(qLower)) return false;
+      return true;
+    }).slice(0, cap);
+    // stats computed over the full recent buffer (not the filtered subset)
+    let pending = 0, success = 0, error = 0, latSum = 0, latN = 0, lastError = "";
+    const recentErrors = [];
+    for (const r of this.recent) {
+      if (r.status === "pending" || r.status === "streaming") pending++;
+      else if (r.status === "success") success++;
+      else if (r.status === "error" || r.status === "client_aborted") {
+        error++;
+        if (r.errorPreview) lastError = r.errorPreview;
+        recentErrors.push({ id: r.id, startedAt: r.startedAt, requestedModel: r.requestedModel, backendId: r.backendId, status: r.status, httpStatus: r.httpStatus, errorPreview: r.errorPreview || "" });
+      }
+      if (typeof r.latencyMs === "number") { latSum += r.latencyMs; latN++; }
+    }
+    recentErrors.reverse(); // newest first
+    return {
+      requests: filtered,
+      stats: {
+        totalRecent: this.recent.length,
+        pending, success, error,
+        avgLatencyMs: latN ? Math.round(latSum / latN) : 0,
+        lastError,
+        recentErrors: recentErrors.slice(0, 200),
+      },
+    };
+  },
+
+  clear() {
+    try { this.recent.length = 0; } catch {}
+    try { fs.writeFileSync(this._logFile(), "", { mode: 0o600 }); } catch {}
+    try { fs.unlinkSync(this._logFile1()); } catch {}
+    try {
+      for (const f of fs.readdirSync(this._traceDir())) {
+        if (f.endsWith(".json")) { try { fs.unlinkSync(path.join(this._traceDir(), f)); } catch {} }
+      }
+    } catch {}
+  },
+};
+
+// Pull usage + stop_reason out of a parsed Anthropic-shaped response object.
+function anthropicUsageFromResponse(json) {
+  try {
+    if (!json || typeof json !== "object") return {};
+    const out = {};
+    if (json.usage && typeof json.usage === "object") {
+      const u = json.usage;
+      out.usage = {
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        ...(u.cache_creation_input_tokens != null ? { cache_creation_input_tokens: u.cache_creation_input_tokens } : {}),
+        ...(u.cache_read_input_tokens != null ? { cache_read_input_tokens: u.cache_read_input_tokens } : {}),
+      };
+    }
+    if (typeof json.stop_reason === "string") out.stopReason = json.stop_reason;
+    return out;
+  } catch { return {}; }
+}
+// Attach a one-time client-abort watcher: if the socket closes before the record is
+// finalized, mark it client_aborted. `res._logFinished` is the guard set by finish.
+function watchClientAbort(res, id) {
+  try {
+    if (!id || !res) return;
+    res.on("close", () => {
+      try {
+        if (res._logFinished) return;
+        const rec = requestLog._find(id);
+        if (rec && (rec.status === "pending" || rec.status === "streaming")) {
+          requestLog.finish(id, { status: "client_aborted", errorPreview: rec.errorPreview || "client disconnected before completion" });
+        }
+      } catch {}
+    });
+  } catch {}
+}
+function markLogFinished(res, id, patch) {
+  try { if (res) res._logFinished = true; } catch {}
+  requestLog.finish(id, patch);
+}
+function requestLogPatchFromAnthropicSseText(text) {
+  const patch = {};
+  let sawError = false;
+  try {
+    for (const block of String(text || "").split("\n\n")) {
+      if (!block.trim()) continue;
+      if (/^event:\s*error/m.test(block)) sawError = true;
+      const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      let obj;
+      try { obj = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
+      if (obj && obj.delta && obj.delta.stop_reason) patch.stopReason = obj.delta.stop_reason;
+      if (obj && obj.usage) {
+        const u = obj.usage;
+        patch.usage = {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          ...(u.cache_creation_input_tokens != null ? { cache_creation_input_tokens: u.cache_creation_input_tokens } : {}),
+          ...(u.cache_read_input_tokens != null ? { cache_read_input_tokens: u.cache_read_input_tokens } : {}),
+        };
+      }
+      if (obj && obj.message && obj.message.usage && !patch.usage) {
+        const u = obj.message.usage;
+        patch.usage = {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          ...(u.cache_creation_input_tokens != null ? { cache_creation_input_tokens: u.cache_creation_input_tokens } : {}),
+          ...(u.cache_read_input_tokens != null ? { cache_read_input_tokens: u.cache_read_input_tokens } : {}),
+        };
+      }
+      if (obj && obj.type === "error") {
+        sawError = true;
+        patch.errorPreview = JSON.stringify(obj.error || obj).slice(0, 300);
+      }
+    }
+  } catch {}
+  if (sawError) patch.status = "error";
+  return patch;
 }
 
 // --- request lifecycle -----------------------------------------------------------
@@ -1666,17 +2694,51 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
-async function streamUpstream(res, up) {
-  const headers = { "content-type": up.headers.get("content-type") || "application/json" };
+// Byte-for-byte passthrough. `log` (optional) = { id, isStream } enables audit-log
+// finalization: we additionally accumulate a capped copy of the body to extract
+// usage/stop_reason/errors — the raw bytes streamed to the client are untouched.
+async function streamUpstream(res, up, log) {
+  const ct = up.headers.get("content-type") || "application/json";
+  const headers = { "content-type": ct };
+  const logId = log && log.id;
+  const isSse = ct.includes("text/event-stream") || (log && log.isStream);
+  if (logId) {
+    requestLog.update(logId, { httpStatus: up.status, status: up.status >= 400 ? "error" : (isSse ? "streaming" : "pending") });
+    requestLog.trace(logId, { upstreamHeaders: { "content-type": ct } });
+  }
   res.writeHead(up.status, headers);
+  const CAP = 65536; // accumulate at most 64KB for parsing/preview
+  let acc = "";
   if (up.body) {
     const reader = up.body.getReader();
+    const decoder = new TextDecoder();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       res.write(Buffer.from(value));
+      if (logId && acc.length < CAP) { try { acc += decoder.decode(value, { stream: true }); if (acc.length > CAP) acc = acc.slice(0, CAP); } catch {} }
     }
   }
+  if (!logId) { res.end(); return; }
+  try {
+    if (up.status >= 400) {
+      markLogFinished(res, logId, { status: "error", httpStatus: up.status, errorPreview: acc.slice(0, 300) });
+      requestLog.trace(logId, { responseBodyPreview: acc.slice(0, 32768) });
+    } else if (isSse) {
+      const events = [];
+      for (const block of acc.split("\n\n")) {
+        if (!block.trim()) continue;
+        if (events.length < 40) events.push(block.slice(0, 800));
+      }
+      const patch = { status: "success", httpStatus: up.status, ...requestLogPatchFromAnthropicSseText(acc) };
+      requestLog.trace(logId, { sseEventsPreview: events });
+      markLogFinished(res, logId, patch);
+    } else {
+      let patch = { status: "success", httpStatus: up.status };
+      try { const json = JSON.parse(acc); Object.assign(patch, anthropicUsageFromResponse(json)); requestLog.trace(logId, { responseBody: json }); } catch { requestLog.trace(logId, { responseBodyPreview: acc.slice(0, 32768) }); }
+      markLogFinished(res, logId, patch);
+    }
+  } catch {}
   res.end();
 }
 
@@ -1689,7 +2751,13 @@ async function proxy(req, res) {
   req._body = body;
   const model = body && body.model;
   const backend = resolveBackend(model);
-  if (!backend) return sendJson(res, 502, { error: { type: "proxy_error", message: `no backend for model ${model || "<none>"}` } });
+  // Audit log: NEVER let logging failures fail a user request (requestLog.start swallows).
+  const logId = requestLog.start(req, body, backend);
+  req._requestLogId = logId;
+  if (!backend) {
+    requestLog.finish(logId, { status: "error", httpStatus: 502, errorPreview: `no backend for model ${model || "<none>"}` });
+    return sendJson(res, 502, { error: { type: "proxy_error", message: `no backend for model ${model || "<none>"}` } });
+  }
   if (backend.format === "openai") return openaiTranslate(req, res, backend, body);
   if (backend.format === "openai-responses") return openaiResponsesTranslate(req, res, backend, body);
   return anthropicPassthrough(req, res, backend, body);
@@ -1771,6 +2839,187 @@ function restoreProfile(opts = {}) {
   return { restoredPath: file };
 }
 
+// --- Visual Model Mapper ---------------------------------------------------------
+function normalizeMapperTiers(tiers, opts = {}) {
+  const out = {};
+  const source = tiers && typeof tiers === "object" && !Array.isArray(tiers) ? tiers : {};
+  const backendIds = opts.cfg ? new Set((opts.cfg.backends || []).filter((b) => b.enabled !== false).map((b) => b.id)) : null;
+  for (const tier of MAPPER_TIERS) {
+    const pick = source[tier] && typeof source[tier] === "object" ? source[tier] : {};
+    const model = String(pick.model || "").trim();
+    const backendId = String(pick.backendId || "").trim();
+    if (opts.requireAll && !model) throw new Error(`mapper tier ${tier} missing model`);
+    if (opts.requireBackend && !backendId) throw new Error(`mapper tier ${tier} missing backendId`);
+    if (backendIds && backendId && !backendIds.has(backendId)) throw new Error(`mapper tier ${tier} unknown or disabled backendId: ${backendId}`);
+    if (model || backendId) out[tier] = { ...(backendId ? { backendId } : {}), ...(model ? { model } : {}) };
+  }
+  return out;
+}
+
+function mapperSettingsEnv(tiers, opts = {}) {
+  const t = normalizeMapperTiers(tiers, { requireAll: true });
+  const port = opts.port || boundPort;
+  const fableModel = t.fable && t.fable.model || t.opus && t.opus.model || "";
+  const env = {
+    ANTHROPIC_BASE_URL: `http://${HOST}:${port}`,
+    ANTHROPIC_API_KEY: DUMMY_KEY,
+    ANTHROPIC_MODEL: fableModel,
+  };
+  for (const tier of MAPPER_TIERS) {
+    const model = t[tier] && t[tier].model || "";
+    const key = tier.toUpperCase();
+    env[`ANTHROPIC_DEFAULT_${key}_MODEL`] = model;
+    env[`ANTHROPIC_DEFAULT_${key}_MODEL_NAME`] = model;
+  }
+  return env;
+}
+
+function mapperDeeplinkConfigEnv(tiers) {
+  const t = normalizeMapperTiers(tiers, { requireAll: true });
+  const env = {};
+  if (t.fable && t.fable.model) {
+    env.ANTHROPIC_DEFAULT_FABLE_MODEL = t.fable.model;
+    env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = t.fable.model;
+  }
+  for (const tier of ["opus", "sonnet", "haiku"]) {
+    if (t[tier] && t[tier].model) env[`ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL_NAME`] = t[tier].model;
+  }
+  return env;
+}
+
+function tierRoutes(tiers, opts = {}) {
+  const t = normalizeMapperTiers(tiers);
+  const routes = [];
+  for (const tier of MAPPER_ROUTE_TIERS) {
+    const pick = t[tier];
+    if (pick && pick.model && pick.backendId) routes.push({ pattern: pick.model, backendId: pick.backendId });
+  }
+  const catchAll = opts.catchAll || { pattern: "*", backendId: "default" };
+  routes.push({ ...catchAll, pattern: catchAll.pattern == null ? "*" : catchAll.pattern });
+  return routes;
+}
+
+function buildMapperDeeplink(input = {}) {
+  const t = normalizeMapperTiers(input.tiers || input, { requireAll: true });
+  const endpoint = String(input.endpoint || `http://${HOST}:${input.port || boundPort}`).replace(/\/+$/, "");
+  const params = new URLSearchParams();
+  params.set("resource", "provider");
+  params.set("app", "claude");
+  params.set("name", String(input.name || "claude-router"));
+  params.set("endpoint", endpoint);
+  params.set("apiKey", DUMMY_KEY);
+  params.set("model", t.fable && t.fable.model || t.opus && t.opus.model || "");
+  if (t.opus && t.opus.model) params.set("opusModel", t.opus.model);
+  if (t.sonnet && t.sonnet.model) params.set("sonnetModel", t.sonnet.model);
+  if (t.haiku && t.haiku.model) params.set("haikuModel", t.haiku.model);
+  const env = mapperDeeplinkConfigEnv(t);
+  if (Object.keys(env).length) {
+    params.set("config", Buffer.from(JSON.stringify({ env }), "utf8").toString("base64"));
+    params.set("configFormat", "json");
+  }
+  params.set("enabled", "true");
+  return { url: `ccswitch://v1/import?${params.toString()}`, env, routes: tierRoutes(input.tiers || input) };
+}
+
+function mapperModelsUrl(backend) {
+  const upstream = String(backend && backend.upstream || "").replace(/\/+$/, "");
+  let host = "";
+  try { host = new URL(upstream).hostname; } catch {}
+  if (host === "dashscope.aliyuncs.com") return `${GLM_OPENAI_COMPAT_UPSTREAM}/models`;
+  if (host === "api.anthropic.com" || host === "platform.claude.com") return upstream.endsWith("/v1") ? `${upstream}/models` : `${upstream}/v1/models`;
+  return `${upstream}/models`;
+}
+
+function normalizeModelList(payload, backendId) {
+  const data = Array.isArray(payload && payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
+  return data.map((m) => {
+    const id = String(m && (m.id || m.name || m.model) || "").trim();
+    if (!id) return null;
+    return { id, display: String(m && (m.display_name || m.display || m.name) || id), backend: backendId };
+  }).filter(Boolean);
+}
+
+async function apiMapperModels(backendId) {
+  const cfg = loadConfig();
+  const backend = cfg.backends.find((b) => b.id === backendId && b.enabled !== false);
+  if (!backend) {
+    const e = new Error(`backend not found or disabled: ${backendId}`);
+    e.status = 404;
+    throw e;
+  }
+  const b = normalizeBackend(backend);
+  if (b.authScheme === "codex-oauth") return { models: CODEX_MAPPER_MODELS.map((m) => ({ ...m, backend: b.id })) };
+
+  if (b.authScheme === "oauth") {
+    const token = await getAccessToken();
+    if (!token) return { models: [], error: "no Claude OAuth account token (login or add an account)" };
+    const url = mapperModelsUrl(b);
+    let r;
+    try { r = await anthropicFetch(url, { method: "GET", headers: headersOAuth({}, token) }); }
+    catch (e) { return { models: [], error: String(e && e.message || e).slice(0, 300) }; }
+    const text = await r.text();
+    if (!r.ok) return { models: [], error: `${r.status} ${text.slice(0, 300)}` };
+    try { return { models: normalizeModelList(JSON.parse(text), b.id) }; }
+    catch { return { models: [], error: "invalid JSON from Claude models endpoint" }; }
+  }
+
+  if (!b.apiKey) return { models: [], error: `${b.id}: missing API key` };
+  const url = mapperModelsUrl(b);
+  let host = "";
+  try { host = new URL(url).hostname; } catch {}
+  const anthropicBound = host === "api.anthropic.com" || host === "platform.claude.com";
+  const headers = anthropicBound
+    ? headersKey({}, b.apiKey)
+    : { authorization: `Bearer ${b.apiKey}`, accept: "application/json" };
+  let r;
+  try {
+    r = await (anthropicBound ? anthropicFetch : fetch)(url, { method: "GET", headers });
+  } catch (e) {
+    if (anthropicBound || !httpProxyFor(url)) return { models: [], error: String(e && e.message || e).slice(0, 300) };
+    try { r = await nodeProxyFetch(url, { method: "GET", headers }); }
+    catch (e2) { return { models: [], error: String(e2 && e2.message || e2).slice(0, 300) }; }
+  }
+  const text = await r.text();
+  if (!r.ok) return { models: [], error: `${r.status} ${text.slice(0, 300)}` };
+  try { return { models: normalizeModelList(JSON.parse(text), b.id) }; }
+  catch { return { models: [], error: `invalid JSON from ${b.id} models endpoint` }; }
+}
+
+async function apiMapperDeeplink(req) {
+  const body = await readJson(req);
+  const tiers = normalizeMapperTiers(body && body.tiers, { requireAll: true });
+  const link = buildMapperDeeplink({ tiers, name: body && body.name });
+  return { ...link, defaults: MAPPER_DEFAULT_MODELS };
+}
+
+function writeMapperSettings(tiers, opts = {}) {
+  const env = mapperSettingsEnv(tiers, opts);
+  if (opts.dryRun) return { env };
+  const file = opts.settingsFile || ccSettingsPath();
+  const backupFile = opts.backupFile || CC_BACKUP;
+  if (!fs.existsSync(backupFile) && fs.existsSync(file)) {
+    atomicWriteFile(backupFile, fs.readFileSync(file, "utf8"), 0o600);
+  }
+  const cur = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8") || "{}") : {};
+  deepMerge(cur, { env });
+  atomicWriteJson(file, cur);
+  return { writtenPath: file, env: cur.env, conflicts: detectOsEnvConflicts() };
+}
+
+async function apiMapperApply(req) {
+  const body = await readJson(req);
+  const cfg = loadConfig();
+  const tiers = normalizeMapperTiers(body && body.tiers, { cfg, requireAll: true, requireBackend: true });
+  const catchAll = (cfg.routes || []).find((r) => {
+    const p = String(r && r.pattern == null ? "*" : r.pattern).trim();
+    return p === "" || p === "*";
+  }) || { pattern: "*", backendId: "default" };
+  cfg.routes = tierRoutes(tiers, { catchAll });
+  saveConfig(cfg);
+  const settings = body && body.writeSettings ? writeMapperSettings(tiers) : null;
+  return { ok: true, routes: cfg.routes, settings, conflicts: detectOsEnvConflicts() };
+}
+
 // --- backend test (live 1-token ping) -------------------------------------------
 // openai path → plain fetch (no TLS gate on GLM/codex).
 // openai-responses path → anthropicFetch (curl) to chatgpt.com (same TLS gate as
@@ -1842,28 +3091,67 @@ async function testBackend(b) {
     return { ok: true, latencyMs: 0, model, sample };
   }
   // anthropic
-  const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (b.authScheme === "oauth") {
+    // Mirror apiTestAccount / anthropicPassthrough Step-1 path: identity system block +
+    // headersOAuth (fixed UA/betas, NO browser-access) + ?beta=true + haiku probe.
+    // The old branch sent a bare body + opus testModel → 429 soft-block (body-content gate)
+    // + opus's separate permission 429, masked as "auth passed".
     const tok = await getAccessToken();
-    if (!tok) return { ok: false, latencyMs: 0, model, error: "not logged in" };
-    headers["authorization"] = `Bearer ${tok}`;
-    headers["anthropic-beta"] = mergeBetas("");   // subscription needs the oauth beta
-  } else {
-    headers["x-api-key"] = b.apiKey;
+    if (!tok) return { ok: false, latencyMs: 0, model, error: "not logged in (no account token)" };
+    const probeModel = "claude-haiku-4-5-20251001"; // opus/sonnet/1M have separate permission 429s (CRS #1000/#1142)
+    const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+    const t0 = Date.now();
+    let r;
+    try {
+      r = await anthropicFetch(b.upstream + "/v1/messages?beta=true", {
+        method: "POST",
+        headers: { ...headersOAuth({}, tok), "content-type": "application/json" },
+        body: JSON.stringify({ model: probeModel, max_tokens: 1, system: [{ type: "text", text: IDENTITY }], messages: [{ role: "user", content: "ping" }] }),
+      });
+    } catch (e) { return { ok: false, latencyMs: Date.now() - t0, model: probeModel, error: String(e && e.message || e).slice(0, 200) }; }
+    const latencyMs = Date.now() - t0;
+    const text = await r.text();
+    if (r.status === 429) return { ok: false, latencyMs, model: probeModel, status: 429, error: `429 ${text.slice(0, 300)}`, retryAfter: r.headers.get("retry-after") || "", rateLimitReset: r.headers.get("anthropic-ratelimit-unified-reset") || "" };
+    if (!r.ok) return { ok: false, latencyMs, model: probeModel, error: `${r.status} ${text.slice(0, 200)}` };
+    let sample = "(ok)";
+    try { const j = JSON.parse(text); const t2 = (j.content || []).find((c) => c.type === "text"); if (t2 && t2.text) sample = t2.text; } catch {}
+    return { ok: true, latencyMs, model: probeModel, sample };
   }
-  const r = await throttledBackendFetch(b, () => anthropicFetch(b.upstream + "/v1/messages", {
-    method: "POST", headers,
-    body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }),
-  }));
-  if (r.status === 429 && b.authScheme === "oauth") return { ok: true, latencyMs: 0, model, sample: "(429 rate-limited - auth passed)" };
-  if (!r.ok) return { ok: false, latencyMs: 0, model, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
-  const j = await r.json();
-  const sample = j.content && j.content[0] && j.content[0].text;
-  return { ok: true, latencyMs: 0, model, sample };
+  // anthropic x-api-key (GLM etc.) — single direct probe, plain fetch (NOT curl):
+  // dashscope throttles curl with 429 "Throttling" (curl→429 ~5s, Node fetch→200 ~5s),
+  // which made the old throttledBackendFetch+curl path retry for 34s. curl is only for
+  // TLS-gated Anthropic hosts.
+  let upHost = ""; try { upHost = new URL(b.upstream).hostname; } catch {}
+  const upFetch = (upHost === "api.anthropic.com" || upHost === "platform.claude.com") ? anthropicFetch : fetch;
+  const t0 = Date.now();
+  const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": b.apiKey };
+  let r;
+  try {
+    r = await upFetch(b.upstream + "/v1/messages", {
+      method: "POST", headers,
+      body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }),
+    });
+  } catch (e) { return { ok: false, latencyMs: Date.now() - t0, model, error: String(e && e.message || e).slice(0, 200) }; }
+  const latencyMs = Date.now() - t0;
+  const text = await r.text();
+  if (!r.ok) return { ok: false, latencyMs, model, error: `${r.status} ${text.slice(0, 200)}` };
+  let sample = "(ok)";
+  try { const j = JSON.parse(text); const t2 = (j.content || []).find((c) => c.type === "text"); if (t2 && t2.text) sample = t2.text; } catch {}
+  return { ok: true, latencyMs, model, sample };
 }
 
 // --- status (existing) ----------------------------------------------------------
 function statusLine() {
+  const store = loadAccounts();
+  if (store.accounts.length) {
+    const active = store.accounts.find((a) => a.id === store.active_id) || store.accounts[0];
+    const available = pickAccount(store);
+    const cooling = store.accounts.filter((a) => a.status !== "disabled" && Number(a.cooldown_until || 0) > Date.now()).length;
+    const label = active ? `${active.label || active.id}${active.organization_name ? " (" + active.organization_name + ")" : ""}` : "none";
+    const suffix = cooling ? `; ${cooling} cooling` : "";
+    if (!available) return { ok: false, text: `Account pool: ${store.accounts.length} account(s); no account currently available${suffix}.` };
+    return { ok: true, text: `Account pool: ${store.accounts.length} account(s). Active: ${label}${suffix}.` };
+  }
   const c = loadCreds();
   if (!c || !c.access_token) return { ok: false, text: "Not logged in." };
   const secs = Math.round(((c.expires_at || 0) - Date.now()) / 1000);
@@ -1878,7 +3166,19 @@ const FALLBACK_HTML = `<!doctype html><meta charset=utf8><meta name=viewport con
 <h1>claude-router</h1><p>webui.html was not found next to server.js — serving a minimal stub. The JSON API is live under <code>/api/*</code>.</p>
 <p><a href="/login">Login with Claude</a> · <form method=post action=/logout style=display:inline><button>Logout</button></form></p>`;
 const WEBUI_PATH = path.join(__dirname, "webui.html");
-const WEBUI = fs.existsSync(WEBUI_PATH) ? fs.readFileSync(WEBUI_PATH, "utf8") : FALLBACK_HTML;
+// Serve webui.html FRESH from disk (mtime-cached) so frontend edits go live on a
+// browser refresh WITHOUT restarting the backend — the 8123 process must never be
+// killed (this session's own API routes through it), but the UI must stay editable.
+let _webuiCache = { mtimeMs: 0, html: null };
+function readWebui() {
+  try {
+    const st = fs.statSync(WEBUI_PATH);
+    if (_webuiCache.html == null || st.mtimeMs !== _webuiCache.mtimeMs) {
+      _webuiCache = { mtimeMs: st.mtimeMs, html: fs.readFileSync(WEBUI_PATH, "utf8") };
+    }
+    return _webuiCache.html;
+  } catch { return FALLBACK_HTML; }
+}
 
 // --- http helpers ----------------------------------------------------------------
 function sendJson(res, code, obj) {
@@ -2052,11 +3352,195 @@ async function apiDeleteProfile(name) {
   return { profiles: cfg.profiles, activeProfile: cfg.activeProfile || null };
 }
 
+function findAccountOrThrow(store, id) {
+  const account = store.accounts.find((a) => a.id === id);
+  if (!account) {
+    const e = new Error(`account not found: ${id}`);
+    e.status = 404;
+    throw e;
+  }
+  return account;
+}
+async function apiListAccounts() {
+  return maskAccountsStore(await accountsForUse());
+}
+async function apiAccountLoginUrl(req) {
+  const body = await readJson(req);
+  const org = stringOrNull(body && body.organization_uuid);
+  // Empty org = standard authorize URL; the active claude.ai org is honored at
+  // consent time, and addAccountToStore rejects duplicate-org tokens (409) — so
+  // no need to force an org UUID up front (the /api/organizations auto-list 403s
+  // for most accounts, which made this hard requirement a login trap).
+  const url = buildAuthorizeUrl(org);
+  return { url, state: pending && pending.state, organization_uuid: pending && pending.organization_uuid };
+}
+async function apiAccountExchange(req) {
+  const body = await readJson(req);
+  if (!body || !body.code) throw new Error("code is required");
+  const account = await exchangeCode(body.code, { state: body.state, label: body.label });
+  return { account: maskedAccount(account) };
+}
+async function apiActivateAccount(id) {
+  const store = loadAccounts();
+  const account = findAccountOrThrow(store, id);
+  store.active_id = account.id;
+  account.status = "active";
+  account.cooldown_until = null;
+  account.cooldown_reason = null;
+  saveAccounts(store);
+  return { ok: true, active_id: store.active_id };
+}
+async function apiDisableAccount(id) {
+  const store = loadAccounts();
+  const account = findAccountOrThrow(store, id);
+  account.status = "disabled";
+  saveAccounts(store);
+  return { ok: true };
+}
+async function apiDeleteAccount(id) {
+  const store = loadAccounts();
+  findAccountOrThrow(store, id);
+  store.accounts = store.accounts.filter((a) => a.id !== id);
+  if (store.active_id === id) store.active_id = store.accounts[0] ? store.accounts[0].id : null;
+  saveAccounts(store);
+  return { ok: true, active_id: store.active_id };
+}
+async function apiRefreshAccount(id) {
+  const store = loadAccounts();
+  const account = findAccountOrThrow(store, id);
+  await ensureAccountAccessToken(store, account, true);
+  saveAccounts(store);
+  return { ok: true, expiresAt: account.claudeAiOauth.expiresAt };
+}
+
+// Diagnostic 1-token probe of one account's token against /v1/messages via curl.
+// Does NOT apply cooldown (it's a test, not a real request). ok=true on 200 OR 429
+// (auth passed, just rate-limited); ok=false on 401/403/400/!ok with the upstream body.
+async function apiTestAccount(id) {
+  const store = loadAccounts();
+  const account = findAccountOrThrow(store, id);
+  if (!account.claudeAiOauth || !account.claudeAiOauth.accessToken) return { ok: false, latencyMs: 0, error: "account has no access token" };
+  let token;
+  try { token = await ensureAccountAccessToken(store, account); }
+  catch (e) { return { ok: false, latencyMs: 0, error: "refresh failed: " + String(e && e.message || e).slice(0, 200) }; }
+  if (!token) return { ok: false, latencyMs: 0, error: "no access token after refresh" };
+  const oauthBackend = (loadConfig().backends || []).find((b) => b.enabled !== false && (b.authScheme === "oauth" || b.oauth));
+  const upstream = (oauthBackend && oauthBackend.upstream) || "https://api.anthropic.com";
+  const model = "claude-haiku-4-5-20251001"; // haiku probe — opus/sonnet/1M have separate permission 429s (CRS #1000/#1142) that mask the identity signal
+  const t0 = Date.now();
+  let r;
+  try {
+    const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+    r = await anthropicFetch(upstream + "/v1/messages?beta=true", {
+      method: "POST",
+      headers: { ...headersOAuth({}, token), "content-type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 1, system: [{ type: "text", text: IDENTITY }], messages: [{ role: "user", content: "ping" }] }),
+    });
+  } catch (e) { return { ok: false, latencyMs: Date.now() - t0, model, error: String(e && e.message || e).slice(0, 200) }; }
+  const text = await r.text();
+  const latencyMs = Date.now() - t0;
+  if (r.status === 429) return { ok: false, latencyMs, model, status: 429, error: `429 ${text.slice(0, 300)}`, retryAfter: r.headers.get("retry-after") || "", rateLimitReset: r.headers.get("anthropic-ratelimit-unified-reset") || "" };
+  if (r.status === 401 || r.status === 403 || r.status === 400 || !r.ok) return { ok: false, latencyMs, model, error: `${r.status} ${text.slice(0, 200)}` };
+  let sample = "(ok)";
+  try { const j = JSON.parse(text); const t2 = (j.content || []).find((c) => c.type === "text"); if (t2 && t2.text) sample = t2.text; } catch {}
+  return { ok: true, latencyMs, model, sample };
+}
+
 async function apiRouter(req, res, url) {
   const method = req.method;
   const seg = url.split("/").filter(Boolean); // ["api", ...]
   const head = seg[1];
   if (head === "state" && method === "GET" && seg.length === 2) return sendJson(res, 200, apiState());
+
+  // --- request inspector -------------------------------------------------------
+  if (head === "requests") {
+    try {
+      if (seg.length === 2) {
+        if (method === "GET") {
+          let qp = new URLSearchParams();
+          try { qp = new URL(req.url, "http://x").searchParams; } catch {}
+          const filters = {
+            limit: qp.get("limit"),
+            status: qp.get("status") || "",
+            backend: qp.get("backend") || "",
+            model: qp.get("model") || "",
+            q: qp.get("q") || "",
+          };
+          return sendJson(res, 200, requestLog.list(filters));
+        }
+        return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+      }
+      if (seg.length === 3 && seg[2] === "clear" && method === "POST") {
+        if (!isAdminOk(req)) return adminDenied(res);
+        requestLog.clear();
+        return sendJson(res, 200, { ok: true });
+      }
+      if (seg.length === 3 && method === "GET") {
+        const rec = requestLog.get(decodeURIComponent(seg[2]));
+        if (!rec) return sendJson(res, 404, { error: { type: "not_found", message: "request not found" } });
+        return sendJson(res, 200, rec);
+      }
+      if (seg.length === 4 && seg[3] === "trace" && method === "GET") {
+        const trace = requestLog.getTrace(decodeURIComponent(seg[2]));
+        if (!trace) return sendJson(res, 404, { error: { type: "not_found", message: "trace not available" } });
+        return sendJson(res, 200, trace);
+      }
+      return sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown requests api path " + url } });
+    } catch (e) {
+      return sendJson(res, 500, { error: { type: "api_error", message: String(e && e.message || e) } });
+    }
+  }
+
+  if (head === "request-settings") {
+    try {
+      if (method === "GET") return sendJson(res, 200, requestLog.reloadSettings());
+      if (method === "POST") {
+        if (!isAdminOk(req)) return adminDenied(res);
+        const patch = await readJson(req);
+        const merged = sanitizeRequestSettings({ ...requestLog.settings, ...patch });
+        requestLog.settings = saveRequestSettings(merged);
+        return sendJson(res, 200, requestLog.settings);
+      }
+      return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+    } catch (e) {
+      return sendJson(res, 500, { error: { type: "api_error", message: String(e && e.message || e) } });
+    }
+  }
+
+  if (head === "mapper") {
+    try {
+      if (seg.length === 4 && seg[2] === "models" && method === "GET") return sendJson(res, 200, await apiMapperModels(decodeURIComponent(seg[3])));
+      if (seg.length === 3 && seg[2] === "deeplink" && method === "POST") return sendJson(res, 200, await apiMapperDeeplink(req));
+      if (seg.length === 3 && seg[2] === "apply" && method === "POST") {
+        if (!isAdminOk(req)) return adminDenied(res);
+        return sendJson(res, 200, await apiMapperApply(req));
+      }
+      return sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown mapper api path " + url } });
+    } catch (e) {
+      return sendJson(res, e.status || 500, { error: { type: e.status === 404 ? "not_found" : "api_error", message: String(e && e.message || e) } });
+    }
+  }
+
+  if (head === "accounts") {
+    if (!isAdminOk(req)) return adminDenied(res);
+    try {
+      if (seg.length === 2) {
+        if (method === "GET") return sendJson(res, 200, await apiListAccounts());
+        return sendJson(res, 405, { error: { type: "method_not_allowed" } });
+      }
+      if (seg.length === 3 && seg[2] === "login-url" && method === "POST") return sendJson(res, 200, await apiAccountLoginUrl(req));
+      if (seg.length === 3 && seg[2] === "exchange" && method === "POST") return sendJson(res, 200, await apiAccountExchange(req));
+      if (seg.length === 3 && seg[2] === "orgs" && method === "GET") return sendJson(res, 200, await listAccountOrganizations());
+      if (seg.length === 3 && method === "DELETE") return sendJson(res, 200, await apiDeleteAccount(seg[2]));
+      if (seg.length === 4 && method === "POST" && seg[3] === "activate") return sendJson(res, 200, await apiActivateAccount(seg[2]));
+      if (seg.length === 4 && method === "POST" && seg[3] === "disable") return sendJson(res, 200, await apiDisableAccount(seg[2]));
+      if (seg.length === 4 && method === "POST" && seg[3] === "refresh") return sendJson(res, 200, await apiRefreshAccount(seg[2]));
+      if (seg.length === 4 && method === "POST" && seg[3] === "test") return sendJson(res, 200, await apiTestAccount(seg[2]));
+      return sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown account api path " + url } });
+    } catch (e) {
+      return sendJson(res, e.status || 500, { error: { type: e.status === 409 ? "conflict" : "api_error", message: String(e && e.message || e) } });
+    }
+  }
 
   if (head === "backends") {
     if (seg.length === 2) {
@@ -2114,14 +3598,14 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = req.url.split("?")[0];
     const method = req.method;
-    if (method === "GET" && url === "/") return sendHtml(res, 200, WEBUI);
+    if (method === "GET" && url === "/") return sendHtml(res, 200, readWebui());
     if (method === "GET" && url === "/login") return redirect(res, buildAuthorizeUrl());
     if (method === "POST" && url === "/exchange") {
       const form = await parseForm(req);
       try { await exchangeCode(form.get("code") || ""); return redirect(res, "/"); }
       catch (e) { return sendHtml(res, 400, `<p style="font:15px system-ui;color:#b3261e">${escapeHtml(String(e && e.message || e))}</p><p><a href="/">← back</a></p>`); }
     }
-    if (method === "POST" && url === "/logout") { clearCreds(); return redirect(res, "/"); }
+    if (method === "POST" && url === "/logout") { clearCreds(); clearAccounts(); return redirect(res, "/"); }
     if (url.startsWith("/api/")) return await apiRouter(req, res, url);
     if (url.startsWith("/v1/")) return await proxy(req, res);
     sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown path " + url } });
@@ -2160,6 +3644,131 @@ function selftest() {
   assert(k["anthropic-beta"] === "claude-code-20250219", "key: must pass client betas through untouched");
   assert(!k["anthropic-beta"].includes("oauth-2025-04-20"), "key: must NOT inject oauth beta");
   console.log("selftest OK");
+}
+
+function selftestMapper() {
+  const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } };
+  const tiers = {
+    opus: { backendId: "default", model: "claude-opus-4-8" },
+    sonnet: { backendId: "glm", model: "glm-5.2" },
+    haiku: { backendId: "codex", model: "gpt-5.5-instant" },
+    fable: { backendId: "codex", model: "gpt-5.5-xhigh" },
+  };
+  const link = buildMapperDeeplink({ tiers, name: "router-test", port: 8123 });
+  assert(link.url.startsWith("ccswitch://v1/import?"), "mapper: ccswitch URL scheme");
+  const parsed = new URL(link.url);
+  assert(parsed.searchParams.get("resource") === "provider", "mapper: resource provider");
+  assert(parsed.searchParams.get("app") === "claude", "mapper: app claude");
+  assert(parsed.searchParams.get("model") === "gpt-5.5-xhigh", "mapper: model uses fable");
+  assert(parsed.searchParams.get("opusModel") === "claude-opus-4-8", "mapper: opusModel param");
+  assert(parsed.searchParams.get("sonnetModel") === "glm-5.2", "mapper: sonnetModel param");
+  assert(parsed.searchParams.get("haikuModel") === "gpt-5.5-instant", "mapper: haikuModel param");
+  assert(parsed.searchParams.get("enabled") === "true", "mapper: enabled=true");
+  const cfg = JSON.parse(Buffer.from(parsed.searchParams.get("config") || "", "base64").toString("utf8"));
+  assert(cfg.env.ANTHROPIC_DEFAULT_FABLE_MODEL === "gpt-5.5-xhigh", "mapper: config carries fable model");
+  assert(cfg.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME === "gpt-5.5-xhigh", "mapper: config carries fable display name");
+  assert(cfg.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME === "claude-opus-4-8", "mapper: config carries opus display name");
+  assert(!("ANTHROPIC_DEFAULT_OPUS_MODEL" in cfg.env), "mapper: opus first-class model stays out of config");
+
+  const expectedRoutes = [
+    { pattern: "claude-opus-4-8", backendId: "default" },
+    { pattern: "glm-5.2", backendId: "glm" },
+    { pattern: "gpt-5.5-instant", backendId: "codex" },
+    { pattern: "gpt-5.5-xhigh", backendId: "codex" },
+    { pattern: "*", backendId: "default" },
+  ];
+  assert(JSON.stringify(tierRoutes(tiers)) === JSON.stringify(expectedRoutes), "mapper: tierRoutes order + catch-all");
+
+  const dry = writeMapperSettings(tiers, { dryRun: true, port: 9000 });
+  assert(dry.env.ANTHROPIC_BASE_URL === "http://127.0.0.1:9000", "mapper: settings base url");
+  assert(dry.env.ANTHROPIC_API_KEY === DUMMY_KEY, "mapper: settings dummy key");
+  assert(dry.env.ANTHROPIC_MODEL === "gpt-5.5-xhigh", "mapper: settings model uses fable");
+  for (const tier of MAPPER_TIERS) {
+    const key = tier.toUpperCase();
+    assert(dry.env[`ANTHROPIC_DEFAULT_${key}_MODEL`] === tiers[tier].model, `mapper: ${tier} model env`);
+    assert(dry.env[`ANTHROPIC_DEFAULT_${key}_MODEL_NAME`] === tiers[tier].model, `mapper: ${tier} model name env`);
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-mapper-"));
+  try {
+    const settingsFile = path.join(tmpDir, "settings.json");
+    const backupFile = path.join(tmpDir, "settings-backup.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ env: { KEEP_ME: "1" }, permissions: { allow: ["Bash(node --version)"] }, theme: "dark" }, null, 2));
+    const written = writeMapperSettings(tiers, { settingsFile, backupFile, port: 9010 });
+    const after = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+    assert(fs.existsSync(backupFile), "mapper: settings backup created once");
+    assert(after.env.KEEP_ME === "1", "mapper: settings env deep-merge preserves existing env");
+    assert(after.env.ANTHROPIC_DEFAULT_SONNET_MODEL === "glm-5.2", "mapper: settings write includes sonnet");
+    assert(after.permissions.allow[0] === "Bash(node --version)" && after.theme === "dark", "mapper: settings write preserves non-env keys");
+    assert(written.env.ANTHROPIC_DEFAULT_FABLE_MODEL === "gpt-5.5-xhigh", "mapper: write returns merged env");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function selftestAccountPool() {
+  const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } };
+  const now = 1_750_000_000_000;
+  const acct = (id, patch = {}) => normalizeAccount({
+    id,
+    label: id,
+    organization_uuid: `org-${id}`,
+    claudeAiOauth: { accessToken: `access-${id}`, refreshToken: `refresh-${id}`, expiresAt: now + 60_000 },
+    status: "active",
+    created_at: now,
+    ...patch,
+  });
+
+  const store = { version: 1, active_id: "acct_02", accounts: [acct("acct_01"), acct("acct_02")] };
+  assert(pickAccount(store, now).id === "acct_02", "pool: active available is selected");
+  store.accounts[1].cooldown_until = now + 10_000;
+  store.accounts[1].status = "cooldown";
+  assert(pickAccount(store, now).id === "acct_01", "pool: active cooling falls back to next available");
+  store.accounts[0].cooldown_until = now + 10_000;
+  store.accounts[0].status = "cooldown";
+  assert(pickAccount(store, now) === null, "pool: all cooling returns null");
+
+  const resetAt = now + 86_400_000;
+  const a429 = acct("acct_03");
+  applyAccountFailure({ accounts: [a429] }, a429, 429, new Map([["anthropic-ratelimit-unified-reset", new Date(resetAt).toISOString()]]), "", now);
+  assert(a429.cooldown_until === resetAt && a429.rate_limit_reset_at === resetAt && a429.cooldown_reason === "429_quota", "pool: 429 reset cooldown");
+  const a429NoReset = acct("acct_04");
+  applyAccountFailure({ accounts: [a429NoReset] }, a429NoReset, 429, {}, "", now);
+  assert(a429NoReset.cooldown_until === now + 300_000, "pool: 429 no-reset cooldown");
+  const a529 = acct("acct_05");
+  applyAccountFailure({ accounts: [a529] }, a529, 529, {}, "", now);
+  assert(a529.cooldown_until === now + 600_000 && a529.cooldown_reason === "529_overload", "pool: 529 cooldown");
+
+  const dedupStore = { version: 1, active_id: null, accounts: [acct("acct_06", { organization_uuid: "org-dupe" })] };
+  // re-login of an existing org REPLACES the account (keeps id), not 409 — refresh w/o Remove
+  const beforeId = dedupStore.accounts[0].id;
+  const replaced = addAccountToStore(dedupStore, acct("acct_07", { organization_uuid: "org-dupe" }));
+  assert(dedupStore.accounts.length === 1, "pool: re-login same org replaces (no duplicate row)");
+  assert(replaced.id === beforeId, "pool: re-login keeps existing account id");
+  const addStore = { version: 1, active_id: null, accounts: [] };
+  const added = addAccountToStore(addStore, acct("acct_12"));
+  assert(addStore.accounts.length === 1 && addStore.active_id === added.id, "pool: add mutates caller store for save");
+
+  const oldPending = pending;
+  const scoped = buildAuthorizeUrl("org-xyz");
+  assert(scoped.includes("https://claude.ai/v1/oauth/org-xyz/authorize"), "pool: org-scoped authorize URL");
+  const generic = buildAuthorizeUrl(null);
+  assert(generic.startsWith(AUTHORIZE_URL + "?"), "pool: generic authorize URL");
+  pending = oldPending;
+
+  const rotateStore = { version: 1, active_id: "acct_08", accounts: [acct("acct_08"), acct("acct_09"), acct("acct_10")] };
+  const tried = new Set();
+  for (let i = 0; i < MAX_ROTATE_RETRIES; i++) {
+    const picked = pickAccount(rotateStore, now, tried);
+    assert(picked, "pool: rotation pick before budget exhausted");
+    applyAccountFailure(rotateStore, picked, 429, {}, "", now);
+    tried.add(picked.id);
+  }
+  assert(pickAccount(rotateStore, now, tried) === null, "pool: rotation budget exhausted");
+  assert(unavailableAccountsPayload().error.type === "proxy_error", "pool: exhausted budget returns proxy_error payload");
+
+  const masked = maskedAccount(acct("acct_11"));
+  assert(masked.claudeAiOauth.accessToken !== "access-acct_11" && masked.claudeAiOauth.refreshToken !== "refresh-acct_11", "pool: account tokens masked");
 }
 
 // Multi-backend assertions: routing, request/response translation, SSE, maskKey.
@@ -2376,15 +3985,196 @@ async function selftestCodexResponses() {
   assert(ns2.stop_reason === "end_turn" && ns2.content[0].text === "hi", "resp non-stream: completed (no tools) → end_turn");
 }
 
+// --- self-test: request inspector (offline, isolated temp dir) ------------------
+function selftestRequestLog() {
+  const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } };
+
+  // 1. redactSecrets() on objects + strings.
+  const red = redactSecrets({
+    authorization: "Bearer sk-ant-abcdefghijklmnopqrstuvwxyz0123456789",
+    "x-api-key": "sk-secretkey12345",
+    nested: { accessToken: "xyz", refreshToken: "abc", note: "use sk-ant-deadbeef0123456789abcd in prod" },
+    list: ["Bearer eyJhbGciOiJ9.payloadpayloadpayloadpayloadpayload.sig", "harmless"],
+    apiKey: "should-be-masked",
+    keep: "hello world",
+  });
+  assert(red.authorization === "[REDACTED]", "redact: authorization key masked");
+  assert(red["x-api-key"] === "[REDACTED]", "redact: x-api-key masked");
+  assert(red.nested.accessToken === "[REDACTED]" && red.nested.refreshToken === "[REDACTED]", "redact: access/refresh token keys masked");
+  assert(red.nested.note.includes("[REDACTED]") && !red.nested.note.includes("deadbeef"), "redact: sk- token inside string masked");
+  assert(red.list[0].includes("[REDACTED]") && red.list[1] === "harmless", "redact: bearer in array masked, plain kept");
+  assert(red.apiKey === "[REDACTED]", "redact: apiKey masked");
+  assert(red.keep === "hello world", "redact: harmless value preserved");
+  assert(redactSecrets("plain text sk-ant-cafebabe0123456789abcd end").includes("[REDACTED]"), "redact: top-level string sk- masked");
+
+  // 2. prompt preview truncates + redacts.
+  const longBody = { model: "m", messages: [{ role: "user", content: "x".repeat(5000) }] };
+  const prev = buildPromptPreview(longBody, 200);
+  assert(prev.length <= 201 + "User: ".length && prev.endsWith("…"), "preview: truncated to cap with ellipsis");
+  const redactedPrev = buildPromptPreview({ model: "m", messages: [{ role: "user", content: "token sk-ant-feedface0123456789abcd here" }] }, 1000);
+  assert(redactedPrev.includes("[REDACTED]") && !redactedPrev.includes("feedface"), "preview: secrets redacted");
+  assert(buildPromptPreview({ model: "m", messages: [{ role: "user", content: [{ type: "text", text: "hi" }, { type: "image" }] }] }, 1000).includes("hi"), "preview: handles block content");
+
+  // Isolate file I/O into a temp dir.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-reqlog-"));
+  const savedDir = requestLog._dir;
+  const savedSettings = requestLog.settings;
+  const savedRecent = requestLog.recent;
+  try {
+    requestLog._dir = tmpDir;
+    requestLog.recent = [];
+    requestLog.settings = { ...REQUEST_SETTINGS_DEFAULTS };
+
+    // 3. records success and error; 4. JSONL append works.
+    const okId = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "glm-5.2", messages: [{ role: "user", content: "ping" }] }, { id: "glm", name: "GLM", format: "anthropic", authScheme: "x-api-key" });
+    requestLog.finish(okId, { status: "success", httpStatus: 200, usage: { input_tokens: 3, output_tokens: 1 }, stopReason: "end_turn" });
+    const errId = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "gpt-5.5-xhigh", messages: [{ role: "user", content: "boom" }] }, { id: "codex", name: "Codex", format: "openai-responses", codexOauth: true });
+    requestLog.finish(errId, { status: "error", httpStatus: 500, errorPreview: "kaboom" });
+    const jsonlPath = path.join(tmpDir, "requests.jsonl");
+    assert(fs.existsSync(jsonlPath), "jsonl: file created");
+    const lines = fs.readFileSync(jsonlPath, "utf8").trim().split("\n");
+    assert(lines.length === 2, "jsonl: two records appended");
+    const recOk = JSON.parse(lines[0]); const recErr = JSON.parse(lines[1]);
+    assert(recOk.status === "success" && recOk.usage.input_tokens === 3 && typeof recOk.latencyMs === "number", "jsonl: success record shape");
+    assert(recErr.status === "error" && recErr.httpStatus === 500 && recErr.errorPreview === "kaboom", "jsonl: error record shape");
+
+    // 8. API filtering returns expected subset.
+    const listAll = requestLog.list({});
+    assert(listAll.requests.length === 2 && listAll.stats.success === 1 && listAll.stats.error === 1, "list: stats success/error");
+    assert(listAll.requests[0].id === errId, "list: newest first");
+    assert(requestLog.list({ status: "error" }).requests.length === 1, "list: status filter");
+    assert(requestLog.list({ backend: "glm" }).requests.length === 1, "list: backend filter");
+    assert(requestLog.list({ model: "gpt-5.5" }).requests.length === 1, "list: model filter");
+    assert(requestLog.list({ q: "ping" }).requests.length === 1, "list: prompt search filter");
+
+    // get() falls back to JSONL tail scan after eviction.
+    requestLog.recent = [];
+    assert(requestLog.get(okId) && requestLog.get(okId).id === okId, "get: jsonl tail-scan fallback");
+
+    // 5. rotation happens when maxLogBytes exceeded.
+    requestLog.settings = { ...REQUEST_SETTINGS_DEFAULTS, maxLogBytes: 1048576 };
+    fs.writeFileSync(jsonlPath, "x".repeat(1048600)); // exceed cap
+    const rid = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "m" }, { id: "glm", format: "anthropic" });
+    requestLog.finish(rid, { status: "success", httpStatus: 200 });
+    assert(fs.existsSync(path.join(tmpDir, "requests.1.jsonl")), "rotate: old log moved to .1");
+    assert(fs.statSync(jsonlPath).size < 1048576, "rotate: new log started small");
+
+    // 6. full trace OFF: no trace file written.
+    requestLog.settings = { ...REQUEST_SETTINGS_DEFAULTS, fullTraceEnabled: false };
+    const offId = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "m" }, { id: "glm", format: "anthropic" });
+    requestLog.trace(offId, { requestBody: { model: "m", "x-api-key": "sk-leak" } });
+    requestLog.finish(offId, { status: "success", httpStatus: 200 });
+    assert(!fs.existsSync(path.join(tmpDir, "request-traces", `${offId}.json`)), "trace off: no trace file");
+    assert(requestLog.getTrace(offId) === null, "trace off: getTrace null");
+
+    // 7. full trace ON: trace file exists and is redacted.
+    requestLog.settings = { ...REQUEST_SETTINGS_DEFAULTS, fullTraceEnabled: true };
+    const onId = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "m" }, { id: "glm", format: "anthropic" });
+    requestLog.trace(onId, { requestBody: { model: "m", authorization: "Bearer sk-ant-secret0123456789abcdef" }, transformedBody: { token: "sk-proj-aaaaaaaaaaaaaaaaaaaa" } });
+    requestLog.finish(onId, { status: "success", httpStatus: 200 });
+    const tracePath = path.join(tmpDir, "request-traces", `${onId}.json`);
+    assert(fs.existsSync(tracePath), "trace on: trace file exists");
+    const traceRaw = fs.readFileSync(tracePath, "utf8");
+    assert(!traceRaw.includes("secret0123456789") && !traceRaw.includes("sk-proj-aaaa"), "trace on: secrets redacted");
+    const got = requestLog.getTrace(onId);
+    assert(got && got.requestBody.authorization === "[REDACTED]", "trace on: getTrace returns redacted body");
+    assert(requestLog.getTrace("../../etc/passwd") === null, "trace: path traversal guarded");
+
+    // trace cap deletes oldest files beyond maxTraceFiles.
+    requestLog.settings = { ...REQUEST_SETTINGS_DEFAULTS, fullTraceEnabled: true, maxTraceFiles: 1 };
+    const capOld = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "m" }, { id: "glm", format: "anthropic" });
+    requestLog.trace(capOld, { responseBodyPreview: "old" });
+    try { fs.utimesSync(path.join(tmpDir, "request-traces", `${capOld}.json`), new Date(Date.now() - 10000), new Date(Date.now() - 10000)); } catch {}
+    const capNew = requestLog.start({ method: "POST", url: "/v1/messages" }, { model: "m" }, { id: "glm", format: "anthropic" });
+    requestLog.trace(capNew, { responseBodyPreview: "new" });
+    assert(!fs.existsSync(path.join(tmpDir, "request-traces", `${capOld}.json`)) && fs.existsSync(path.join(tmpDir, "request-traces", `${capNew}.json`)), "trace cap: oldest deleted beyond cap");
+
+    const ssePatch = requestLogPatchFromAnthropicSseText([
+      sseBlock("message_start", { message: { usage: { input_tokens: 3, output_tokens: 1 } } }),
+      sseBlock("message_delta", { delta: { stop_reason: "end_turn" }, usage: { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 2 } }),
+      sseBlock("message_stop", {})
+    ].join(""));
+    assert(ssePatch.stopReason === "end_turn" && ssePatch.usage.input_tokens === 9 && ssePatch.usage.cache_read_input_tokens === 2, "sse parser: captures stop_reason + usage");
+
+    // clear() empties memory + files.
+    requestLog.clear();
+    assert(requestLog.recent.length === 0, "clear: memory emptied");
+    assert(fs.readFileSync(jsonlPath, "utf8") === "", "clear: jsonl truncated");
+    assert(!fs.existsSync(path.join(tmpDir, "requests.1.jsonl")), "clear: rotated log deleted");
+    assert(!fs.existsSync(tracePath), "clear: trace files deleted");
+
+    // settings sanitization clamps out-of-range values.
+    const s = sanitizeRequestSettings({ promptPreviewChars: 999999, maxRecentRequests: 1, maxLogBytes: 1, maxTraceFiles: 99999, fullTraceEnabled: "yes" });
+    assert(s.promptPreviewChars === 5000 && s.maxRecentRequests === 50 && s.maxLogBytes === 1048576 && s.maxTraceFiles === 1000 && s.fullTraceEnabled === false, "settings: clamp + type guard");
+
+    // sanitizeThinkingForClaude: drop unsigned thinking blocks, keep signed ones.
+    const msgs = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "thinking", signature: "", thinking: "unsigned (from GLM)" }, { type: "text", text: "answer" }] },
+      { role: "assistant", content: [{ type: "thinking", signature: "abc123", thinking: "signed (from Claude)" }, { type: "text", text: "ok" }] },
+      { role: "assistant", content: [{ type: "thinking", signature: "", thinking: "only unsigned" }] },
+    ];
+    const cleaned = sanitizeThinkingForClaude(msgs);
+    assert(cleaned[1].content.length === 1 && cleaned[1].content[0].type === "text", "thinking: unsigned dropped, text kept");
+    assert(cleaned[2].content.length === 2 && cleaned[2].content[0].type === "thinking", "thinking: signed block preserved");
+    assert(cleaned[3].content.length === 1 && cleaned[3].content[0].type === "text" && cleaned[3].content[0].text === "", "thinking: emptied turn gets placeholder text");
+    assert(sanitizeThinkingForClaude(msgs) !== msgs, "thinking: returns new array when changed");
+    const noThink = [{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "text", text: "y" }] }];
+    assert(sanitizeThinkingForClaude(noThink) === noThink, "thinking: untouched array returned as-is");
+  } finally {
+    requestLog._dir = savedDir;
+    requestLog.settings = savedSettings;
+    requestLog.recent = savedRecent;
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+  console.log("selftest OK (request-inspector)");
+}
+
 // --- --checkbackends (live network pings, no listener) --------------------------
 async function checkBackends() {
   const cfg = loadConfig();
   let allOk = true;
   for (const b of cfg.backends) {
     if (b.enabled === false) { console.log(`  [SKIP] ${b.id} (disabled)`); continue; }
+    const nb = normalizeBackend(b);
+    if (nb.authScheme === "oauth") {
+      const store = await accountsForUse();
+      if (store.accounts.length) {
+        const model = nb.testModel || (nb.modelPatterns && nb.modelPatterns.find((p) => p && p !== "*")) || "";
+        for (const account of store.accounts) {
+          const tag = `${nb.id}/${account.id}`;
+          if (account.status === "disabled") { console.log(`  [SKIP] ${tag} (${account.label}, disabled)`); continue; }
+          if (Number(account.cooldown_until || 0) > Date.now()) { console.log(`  [SKIP] ${tag} (${account.label}, cooling until ${new Date(account.cooldown_until).toISOString()})`); continue; }
+          const t0 = Date.now();
+          try {
+            const token = await ensureAccountAccessToken(store, account);
+            const r = await throttledBackendFetch(nb, () => anthropicFetch(nb.upstream + "/v1/messages", {
+              method: "POST",
+              headers: headersOAuth({ "content-type": "application/json" }, token),
+              body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }),
+            }));
+            const ms = Date.now() - t0;
+            if (r.status === 429) {
+              console.log(`  [OK  ] ${tag} (${account.organization_name || account.organization_uuid || account.label}) ${ms}ms sample="(429 rate-limited - auth passed)"`);
+              continue;
+            }
+            if (!r.ok) {
+              const err = `${r.status} ${(await r.text()).slice(0, 200)}`;
+              console.log(`  [FAIL] ${tag} (${account.organization_name || account.organization_uuid || account.label}) ${ms}ms err=${err}`);
+              allOk = false;
+              continue;
+            }
+            const j = await r.json();
+            const sample = j.content && j.content[0] && j.content[0].text;
+            console.log(`  [OK  ] ${tag} (${account.organization_name || account.organization_uuid || account.label}) ${ms}ms sample=${JSON.stringify(sample)}`);
+          } catch (e) { console.log(`  [FAIL] ${tag} ${e.message}`); allOk = false; }
+        }
+        continue;
+      }
+    }
     const t0 = Date.now();
     try {
-      const r = await testBackend(normalizeBackend(b));
+      const r = await testBackend(nb);
       const ms = Date.now() - t0;
       console.log(`  [${r.ok ? "OK  " : "FAIL"}] ${b.id} (${b.format}) ${ms}ms${r.ok ? " sample=" + JSON.stringify(r.sample) : " err=" + r.error}`);
       if (!r.ok) allOk = false;
@@ -2425,12 +4215,16 @@ if (process.argv.includes("--selftest")) {
   // result ordering is deterministic.
   (async () => {
     selftest();
+    selftestMapper();
+    selftestAccountPool();
     await selftestMultiBackend();
     await selftestCodexResponses();
-    console.log("selftest OK (multi-backend + codex/responses)");
+    selftestRequestLog();
+    console.log("selftest OK (account-pool + multi-backend + codex/responses + request-inspector)");
   })();
 } else if (process.argv.includes("--checkbackends")) {
   checkBackends();
 } else {
+  migrateAccountsFromCreds().catch(() => {});
   listenWithRetry(PORT, 60);
 }

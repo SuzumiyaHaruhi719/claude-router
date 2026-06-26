@@ -517,6 +517,92 @@
     background: #0f172a;
     color: #e5edff;
   }
+  .mapper-grid {
+    display: grid;
+    gap: 10px;
+  }
+  .mapper-row {
+    display: grid;
+    grid-template-columns: minmax(108px, .7fr) minmax(180px, 1fr) minmax(220px, 1.4fr);
+    gap: 10px;
+    align-items: end;
+    min-height: 86px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--surface-2), transparent 18%);
+    padding: 10px;
+  }
+  .mapper-tier {
+    display: grid;
+    gap: 4px;
+    align-content: center;
+    min-width: 0;
+  }
+  .mapper-tier strong { font-size: 14px; color: var(--text); }
+  .mapper-tier span { color: var(--muted); font-size: 12px; }
+  .mapper-custom { grid-column: 3; }
+  .mapper-preview-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .mapper-preview-head {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .pool-head-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .pool-trace-toggle { margin: 0; }
+  .pool-privacy {
+    border: 1px solid color-mix(in srgb, var(--warning), transparent 50%);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--warning), transparent 90%);
+    padding: 8px 10px;
+    margin: 0;
+  }
+  .pool-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+  }
+  .pool-filters label { display: grid; gap: 4px; }
+  .pool-filters span { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .pool-errorlog-wrap { display: grid; gap: 6px; }
+  .pool-errorlog-title { margin: 0; font-size: 13px; color: var(--danger); }
+  .pool-errorlog { max-height: 26vh; overflow: auto; border: 1px solid color-mix(in srgb, var(--danger), transparent 60%); border-radius: var(--radius); background: #07090d; }
+  [data-theme="light"] .pool-errorlog { background: #0f172a; }
+  .err-line { display: grid; gap: 2px; padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--danger), transparent 80%); font-family: var(--mono); font-size: 12px; }
+  .err-line:last-child { border-bottom: 0; }
+  .err-meta { color: var(--warning); }
+  .err-text { color: #fecaca; white-space: pre-wrap; word-break: break-word; }
+  .pool-scroll { max-height: 60vh; overflow: auto; }
+  .pool-scroll thead th { position: sticky; top: 0; z-index: 1; }
+  .pool-row { cursor: pointer; }
+  .pool-row:hover td { background: color-mix(in srgb, var(--surface-3), transparent 55%); }
+  .pool-row td { font-size: 13px; }
+  .pool-prompt { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subtle); font-family: var(--mono); }
+  .pool-err { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); }
+  .pool-detail td { background: color-mix(in srgb, var(--surface-2), transparent 8%); padding: 0; }
+  .pool-detail-inner { padding: 12px 14px; display: grid; gap: 8px; }
+  .pool-detail-grid { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 4px 14px; font-size: 13px; }
+  .pool-detail-grid dt { color: var(--muted); font-weight: 700; }
+  .pool-detail-grid dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+  .pool-detail-pre { margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: #07090d; color: #dbeafe; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+  [data-theme="light"] .pool-detail-pre { background: #0f172a; color: #e5edff; }
+  .pool-empty { padding: 16px; text-align: center; color: var(--subtle); }
+  .status-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid var(--line); white-space: nowrap; }
+  .status-pill.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning), transparent 45%); background: color-mix(in srgb, var(--warning), transparent 88%); }
+  .status-pill.ok { color: var(--success); border-color: color-mix(in srgb, var(--success), transparent 45%); background: color-mix(in srgb, var(--success), transparent 88%); }
+  .status-pill.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger), transparent 45%); background: color-mix(in srgb, var(--danger), transparent 88%); }
+
   .banner {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -646,6 +732,12 @@
     .span-2 { grid-column: 1 / -1; }
     .form-grid.two { grid-template-columns: 1fr 1fr; }
     .form-grid.three { grid-template-columns: repeat(3, 1fr); }
+    .mapper-preview-grid { grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); }
+  }
+
+  @media (max-width: 760px) {
+    .mapper-row { grid-template-columns: 1fr; }
+    .mapper-custom { grid-column: 1; }
   }
 
   @media (min-width: 1080px) {
@@ -722,18 +814,101 @@
     <div class="section-header">
       <div>
         <h2 id="statsTitle">Live Admin Stats</h2>
-        <p class="section-copy">Throttle counters are polled from <code>/api/state</code>. Request history appears only if the backend exposes it.</p>
+        <p class="section-copy">Throttle counters and the request pool are polled from <code>/api/state</code> and <code>/api/requests</code>.</p>
       </div>
       <label class="check-row" style="grid-template-columns:auto 1fr">
         <input id="autoRefresh" type="checkbox" checked>
         <span>Auto refresh</span>
       </label>
     </div>
-    <div class="section-body split">
+    <div class="section-body panel-grid">
       <div class="panel-grid stats-grid" id="statsGrid"></div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="poolTitle">
+    <div class="section-header">
       <div>
-        <h3 class="sr-only">Recent requests</h3>
-        <ul class="status-list" id="recentList"></ul>
+        <h2 id="poolTitle">Request Pool</h2>
+        <p class="section-copy">Recent requests routed through the proxy: which backend/account served them, status, latency, redacted prompt preview, and errors. Click a row to expand details.</p>
+      </div>
+      <div class="pool-head-actions">
+        <label class="check-row pool-trace-toggle" style="grid-template-columns:auto 1fr">
+          <input id="fullTraceToggle" type="checkbox">
+          <span>Full trace capture</span>
+        </label>
+        <button class="danger" id="clearLogs" type="button"><svg aria-hidden="true"><use href="#icon-trash"></use></svg>Clear logs</button>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="panel-grid stats-grid" id="poolStatsGrid"></div>
+      <p class="section-copy pool-privacy" id="poolPrivacy">Request summaries store redacted prompt previews. Full trace stores complete prompts and responses locally in <code>~/.claude-router/request-traces</code>; use only while debugging.</p>
+      <div class="pool-errorlog-wrap">
+        <h3 class="pool-errorlog-title">Error log <span class="hint">(newest first, live)</span></h3>
+        <div class="pool-errorlog" id="poolErrorLog"></div>
+      </div>
+      <div class="pool-filters">
+        <label>
+          <span>Status</span>
+          <select id="poolStatus">
+            <option value="">All</option>
+            <option value="success">Success</option>
+            <option value="error">Error</option>
+            <option value="pending">Pending</option>
+            <option value="streaming">Streaming</option>
+            <option value="client_aborted">Client aborted</option>
+          </select>
+        </label>
+        <label>
+          <span>Backend</span>
+          <select id="poolBackend"><option value="">All</option></select>
+        </label>
+        <label>
+          <span>Model</span>
+          <input id="poolModel" type="search" placeholder="e.g. glm-5.2">
+        </label>
+        <label>
+          <span>Prompt search</span>
+          <input id="poolQuery" type="search" placeholder="text in prompt preview">
+        </label>
+      </div>
+      <div class="table-shell pool-scroll">
+        <table aria-label="Request pool">
+          <thead><tr><th>Time</th><th>Status</th><th>Model</th><th>Backend / API</th><th>Account / org</th><th>Latency</th><th>Prompt preview</th><th>Error</th></tr></thead>
+          <tbody id="poolBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="accountsTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="accountsTitle">Accounts</h2>
+        <p class="section-copy">Org-scoped Claude OAuth accounts back the subscription OAuth backend and rotate automatically when one org is quota-limited.</p>
+      </div>
+      <button class="primary" id="addAccount" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add account</button>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="banner" id="accountsBanner">
+        <span class="dot warn" aria-hidden="true"></span>
+        <div>No account pool loaded.</div>
+      </div>
+      <div class="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>Email</th>
+              <th>Organization</th>
+              <th>Status</th>
+              <th>Subscription</th>
+              <th>Last 429</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="accountsRows"></tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -768,6 +943,36 @@
         </div>
       </div>
       <ul class="status-list" id="oauthStatusList"></ul>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="mapperTitle">
+    <div class="section-header">
+      <div>
+        <h2 id="mapperTitle">Model Mapper</h2>
+        <p class="section-copy">Map Claude Code tiers to router backends and import the mapping into cc-switch.</p>
+      </div>
+      <div class="row">
+        <button class="primary" id="mapperImport" type="button"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Import to CC Switch</button>
+        <button id="mapperApply" type="button"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Apply</button>
+        <button class="ghost" id="mapperCopy" type="button"><svg aria-hidden="true"><use href="#icon-copy"></use></svg>Copy link</button>
+      </div>
+    </div>
+    <div class="section-body panel-grid">
+      <div class="banner" id="mapperConflictBanner" hidden><span class="dot warn" aria-hidden="true"></span><div></div></div>
+      <div id="mapperStatus" class="soft" aria-live="polite"></div>
+      <div class="mapper-grid" id="mapperRows"></div>
+      <div class="mapper-preview-grid">
+        <div>
+          <p class="mapper-preview-head">cc-switch deep link</p>
+          <div class="preview"><pre id="mapperDeeplinkPreview"></pre></div>
+        </div>
+        <div>
+          <p class="mapper-preview-head">Routes preview</p>
+          <div class="preview"><pre id="mapperRoutesPreview"></pre></div>
+        </div>
+      </div>
+      <a id="mapperOpenLink" href="#" hidden>Open cc-switch import</a>
     </div>
   </section>
 
@@ -882,6 +1087,53 @@
     <code>node server.js --checkbackends</code>
   </div>
 </footer>
+</div>
+
+<div class="modal-backdrop" id="accountModal" hidden>
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
+    <div class="modal-head">
+      <h2 id="accountModalTitle">Add account</h2>
+      <button class="icon-only" id="closeAccountModal" type="button" aria-label="Close account login"><svg aria-hidden="true"><use href="#icon-x"></use></svg></button>
+    </div>
+    <form id="accountExchangeForm">
+      <div class="modal-body">
+        <div class="banner" id="accountOrgBanner">
+          <span class="dot warn" aria-hidden="true"></span>
+          <div>First account uses the default-org Claude authorize flow. Additional accounts should choose or paste a target organization UUID.</div>
+        </div>
+        <div class="form-grid two">
+          <label>
+            <span>Organization</span>
+            <select id="accountOrgSelect">
+              <option value="">Default org</option>
+            </select>
+          </label>
+          <label>
+            <span>Manual org UUID</span>
+            <input id="manualOrgUuid" type="text" autocomplete="off" placeholder="Paste org UUID if lookup is unavailable">
+          </label>
+        </div>
+        <div class="row">
+          <button type="button" id="loadAccountOrgs"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg>Load orgs</button>
+          <button class="primary" type="button" id="prepareAccountLogin"><svg aria-hidden="true"><use href="#icon-external"></use></svg>Prepare login</button>
+          <a class="button" id="accountLoginLink" href="#" target="_blank" rel="noopener" hidden><svg aria-hidden="true"><use href="#icon-external"></use></svg>Open Claude</a>
+        </div>
+        <label>
+          <span>Authorization code with state</span>
+          <input id="accountExchangeCode" type="text" inputmode="text" autocomplete="off" placeholder="Paste code#state from the callback page">
+        </label>
+        <input type="hidden" id="accountExchangeState">
+        <div class="banner">
+          <span class="dot warn" aria-hidden="true"></span>
+          <div>Do not switch accounts at request time. Each login stores one org-bound token; manual Activate only changes the preferred default.</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="cancelAccountLogin">Cancel</button>
+        <button class="primary" type="submit"><svg aria-hidden="true"><use href="#icon-check"></use></svg>Submit code</button>
+      </div>
+    </form>
+  </section>
 </div>
 
 <div class="modal-backdrop" id="backendModal" hidden>
@@ -999,21 +1251,56 @@ const THROTTLE_DEFAULTS = {
   minIntervalMs: 350
 };
 const PROFILE_UI_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const MAPPER_TIERS = ["fable", "opus", "sonnet", "haiku"];
+const MAPPER_ROUTE_TIERS = ["opus", "sonnet", "haiku", "fable"];
+const MAPPER_LABELS = {
+  fable: ["Fable", "default"],
+  opus: ["Opus", "highest tier"],
+  sonnet: ["Sonnet", "balanced tier"],
+  haiku: ["Haiku", "fast tier"]
+};
+const MAPPER_DEFAULT_MODELS = {
+  fable: "gpt-5.5-xhigh",
+  opus: "claude-opus-4-8",
+  sonnet: "glm-5.2",
+  haiku: "gpt-5.5-instant"
+};
+const CUSTOM_MODEL_VALUE = "__custom__";
 const $ = (id) => document.getElementById(id);
 let state = {
   mode: "loading",
   baseUrl: location.origin && location.origin !== "null" ? location.origin : "http://127.0.0.1:8123",
   oauthStatus: "",
+  accounts: [],
+  activeAccountId: null,
   backends: [],
   routes: [],
   profiles: {},
   activeProfile: null,
   throttleStats: {},
-  osEnvConflicts: []
+  osEnvConflicts: [],
+  pool: {
+    requests: [],
+    stats: { totalRecent: 0, pending: 0, success: 0, error: 0, avgLatencyMs: 0, lastError: "" },
+    settings: { fullTraceEnabled: false },
+    expanded: {},
+    traceCache: {},
+    filters: { status: "", backend: "", model: "", q: "" }
+  },
+  mapper: {
+    tiers: {},
+    modelCache: {},
+    previewUrl: "",
+    previewBusy: false
+  }
 };
 let selectedProfileName = null;
 let pollTimer = null;
+let testsInFlight = 0; // pause auto-refresh while a backend test runs (prevents card re-render wiping the result)
+const testResults = {}; // persist backend test results across re-renders (keyed by backend id)
 let lastFocus = null;
+let mapperPreviewTimer = null;
+let mapperPreviewSeq = 0;
 
 function icon(name) {
   return `<svg aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
@@ -1026,6 +1313,11 @@ function esc(value) {
     '"': "&quot;",
     "'": "&#39;"
   }[c]));
+}
+function truncate(value, max) {
+  const s = String(value == null ? "" : value);
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(0, max - 1)) + "…";
 }
 function modeLabel(mode) {
   if (mode === "multi-backend") return "Multi-backend";
@@ -1079,22 +1371,47 @@ function pathName(name) {
   return encodeURIComponent(name);
 }
 
+function poolQuery() {
+  const f = state.pool.filters;
+  const p = new URLSearchParams();
+  if (f.status) p.set("status", f.status);
+  if (f.backend) p.set("backend", f.backend);
+  if (f.model) p.set("model", f.model);
+  if (f.q) p.set("q", f.q);
+  const qs = p.toString();
+  return "/api/requests" + (qs ? "?" + qs : "");
+}
+
 async function loadAll({ quiet = false } = {}) {
   try {
-    const [stateData, backends, routes, profileData] = await Promise.all([
+    const mapperState = state.mapper;
+    const poolState = state.pool;
+    const [stateData, accountsData, backends, routes, profileData, poolData, poolSettings] = await Promise.all([
       api("GET", "/api/state"),
+      api("GET", "/api/accounts"),
       api("GET", "/api/backends"),
       api("GET", "/api/routes"),
-      api("GET", "/api/profiles")
+      api("GET", "/api/profiles"),
+      api("GET", poolQuery()).catch(() => null),
+      api("GET", "/api/request-settings").catch(() => null)
     ]);
     state = {
       ...stateData,
+      accounts: accountsData && Array.isArray(accountsData.accounts) ? accountsData.accounts : [],
+      activeAccountId: accountsData && "active_id" in accountsData ? accountsData.active_id : null,
       backends: Array.isArray(backends) ? backends : [],
       routes: Array.isArray(routes) ? routes : [],
       profiles: profileData && profileData.profiles ? profileData.profiles : {},
       activeProfile: profileData && "activeProfile" in profileData ? profileData.activeProfile : stateData.activeProfile,
       throttleStats: stateData.throttleStats || {},
-      osEnvConflicts: stateData.osEnvConflicts || []
+      osEnvConflicts: stateData.osEnvConflicts || [],
+      pool: {
+        ...poolState,
+        requests: poolData && Array.isArray(poolData.requests) ? poolData.requests : [],
+        stats: poolData && poolData.stats ? poolData.stats : poolState.stats,
+        settings: poolSettings && typeof poolSettings === "object" ? poolSettings : poolState.settings
+      },
+      mapper: mapperState
     };
     setLoadError(null);
     renderAll();
@@ -1110,7 +1427,10 @@ async function loadAll({ quiet = false } = {}) {
 function renderAll() {
   renderHeader();
   renderStats();
+  renderPool();
+  renderAccounts();
   renderOAuth();
+  renderMapper();
   renderBackends();
   renderRoutes();
   renderProfiles();
@@ -1150,11 +1470,165 @@ function renderStats() {
       <div class="hint">${esc(hint)}</div>
     </article>
   `).join("");
-  $("recentList").innerHTML = `
-    <li><span class="dot warn" aria-hidden="true"></span><div><strong>Request count:</strong> not exposed by <code>/api/*</code>.</div></li>
-    <li><span class="dot warn" aria-hidden="true"></span><div><strong>Recent requests:</strong> no request-history endpoint is present in <code>server.js</code>.</div></li>
-    <li><span class="dot ok" aria-hidden="true"></span><div><strong>Throttle snapshots:</strong> in-flight, queued, and retry counts are live via <code>/api/state</code>.</div></li>
-  `;
+}
+
+const POOL_STATUS_TONE = { pending: "warn", streaming: "warn", success: "ok", error: "danger", client_aborted: "danger" };
+function poolStatusPill(status) {
+  const tone = POOL_STATUS_TONE[status] || "";
+  const label = status === "client_aborted" ? "aborted" : (status || "—");
+  return `<span class="status-pill ${tone}">${esc(label)}</span>`;
+}
+function fmtLatency(ms) {
+  const n = Number(ms || 0);
+  if (!n) return "—";
+  if (n < 1000) return n + " ms";
+  return (n / 1000).toFixed(n < 10000 ? 2 : 1) + " s";
+}
+function fmtClock(ms) {
+  const n = Number(ms || 0);
+  if (!n) return "—";
+  try { return new Date(n).toLocaleTimeString(); } catch { return "—"; }
+}
+function poolAccountLabel(r) {
+  if (r.accountId) {
+    const org = r.organizationName ? ` (${r.organizationName})` : "";
+    return esc(r.accountId + org);
+  }
+  if (r.authScheme && r.authScheme !== "oauth") return esc(r.authScheme);
+  return "—";
+}
+function renderPool() {
+  const pool = state.pool || {};
+  const s = pool.stats || {};
+  // sync the full-trace toggle with persisted settings (unless the box is focused mid-edit)
+  const traceBox = $("fullTraceToggle");
+  if (traceBox && document.activeElement !== traceBox) traceBox.checked = !!(pool.settings && pool.settings.fullTraceEnabled);
+  const poolStats = [
+    ["Total recent", s.totalRecent || 0, "Requests in buffer", "primary"],
+    ["In flight", s.pending || 0, "Pending or streaming", (s.pending ? "warn" : "")],
+    ["Success", s.success || 0, "Completed normally", (s.success ? "success" : "")],
+    ["Errors", s.error || 0, "Errored or aborted", (s.error ? "danger" : "")],
+    ["Avg latency", fmtLatency(s.avgLatencyMs), "Across finished requests", ""],
+    ["Last error", s.lastError ? truncate(s.lastError, 60) : "—", "Most recent failure", (s.lastError ? "danger" : "")]
+  ];
+  $("poolStatsGrid").innerHTML = poolStats.map(([key, value, hint, tone]) => `
+    <article class="metric" data-tone="${esc(tone)}">
+      <div class="k">${esc(key)}</div>
+      <div class="v" style="font-size:${String(value).length > 14 ? "13px" : "26px"}">${esc(value)}</div>
+      <div class="hint">${esc(hint)}</div>
+    </article>
+  `).join("");
+
+  // error log panel under the status pool — scrollable, newest first, all errors in buffer
+  const errs = Array.isArray(s.recentErrors) ? s.recentErrors : [];
+  const errEl = $("poolErrorLog");
+  if (errEl) {
+    errEl.innerHTML = errs.length
+      ? errs.map((e) => `<div class="err-line"><span class="err-meta">${esc(fmtClock(e.startedAt))} · ${esc(e.requestedModel || "—")} · ${esc(e.backendId || "—")}${e.httpStatus ? " · HTTP " + esc(e.httpStatus) : ""} · ${esc(e.status)}</span><span class="err-text">${esc(e.errorPreview || "")}</span></div>`).join("")
+      : `<div class="hint" style="padding:8px">No errors logged.</div>`;
+  }
+
+  // backend filter options (preserve current selection)
+  const backendSel = $("poolBackend");
+  if (backendSel) {
+    const cur = pool.filters.backend;
+    const ids = state.backends.map((b) => b.id);
+    backendSel.innerHTML = `<option value="">All</option>` + ids.map((id) => `<option value="${esc(id)}" ${id === cur ? "selected" : ""}>${esc(id)}</option>`).join("");
+    backendSel.value = cur;
+  }
+
+  const rows = pool.requests || [];
+  const body = $("poolBody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="pool-empty">No requests logged yet. Send a request through the proxy and it will appear here.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r) => {
+    const expanded = !!pool.expanded[r.id];
+    const main = `
+      <tr class="pool-row" data-req="${esc(r.id)}" aria-expanded="${expanded}">
+        <td>${esc(fmtClock(r.startedAt))}</td>
+        <td>${poolStatusPill(r.status)}${r.httpStatus ? `<span class="chip" style="margin-left:6px"><span>${esc(r.httpStatus)}</span></span>` : ""}</td>
+        <td>${esc(r.requestedModel || "—")}</td>
+        <td>${esc(r.backendName || r.backendId || "—")}${r.backendFormat ? `<div class="hint">${esc(r.backendFormat)}</div>` : ""}</td>
+        <td>${poolAccountLabel(r)}</td>
+        <td>${esc(fmtLatency(r.latencyMs))}</td>
+        <td class="pool-prompt" title="${esc(r.promptPreview || "")}">${esc(truncate(r.promptPreview || "", 80) || "—")}</td>
+        <td class="pool-err" title="${esc(r.errorPreview || "")}">${esc(truncate(r.errorPreview || "", 50) || "")}</td>
+      </tr>`;
+    return main + (expanded ? poolDetailRow(r) : "");
+  }).join("");
+}
+function poolDetailRow(r) {
+  const usage = r.usage ? JSON.stringify(r.usage) : "—";
+  const traceHtml = r.traceAvailable
+    ? `<button class="ghost" data-trace="${esc(r.id)}" type="button">${icon("eye")}View full trace</button><pre class="pool-detail-pre" id="trace-${esc(r.id)}" hidden></pre>`
+    : `<span class="hint">No full trace (enable full trace capture, then send a new request).</span>`;
+  return `
+    <tr class="pool-detail"><td colspan="8"><div class="pool-detail-inner">
+      <dl class="pool-detail-grid">
+        <dt>Request id</dt><dd>${esc(r.id)}</dd>
+        <dt>Method / path</dt><dd>${esc(r.method || "")} ${esc(r.path || "")}${r.stream ? " (stream)" : ""}</dd>
+        <dt>Requested model</dt><dd>${esc(r.requestedModel || "—")}</dd>
+        <dt>Upstream model</dt><dd>${esc(r.upstreamModel || "—")}</dd>
+        <dt>Backend</dt><dd>${esc(r.backendName || r.backendId || "—")} · ${esc(r.backendFormat || "")} · ${esc(r.authScheme || "")}</dd>
+        <dt>Upstream URL</dt><dd>${esc(r.upstream || "—")}</dd>
+        <dt>Account / org</dt><dd>${esc(r.accountId || "—")}${r.organizationName ? " · " + esc(r.organizationName) : ""}${r.organizationUuid ? " · " + esc(r.organizationUuid) : ""}</dd>
+        <dt>Status</dt><dd>${esc(r.status)}${r.httpStatus ? " · HTTP " + esc(r.httpStatus) : ""}${r.stopReason ? " · stop=" + esc(r.stopReason) : ""}</dd>
+        <dt>Latency</dt><dd>${esc(fmtLatency(r.latencyMs))}</dd>
+        <dt>Retries / rotations</dt><dd>${esc(r.retryCount || 0)} / ${esc(r.rotationCount || 0)}</dd>
+        <dt>Usage</dt><dd>${esc(usage)}</dd>
+      </dl>
+      <div><strong>Prompt preview</strong><pre class="pool-detail-pre">${esc(r.promptPreview || "—")}</pre></div>
+      ${r.errorPreview ? `<div><strong style="color:var(--danger)">Error</strong><pre class="pool-detail-pre">${esc(r.errorPreview)}</pre></div>` : ""}
+      <div>${traceHtml}</div>
+    </div></td></tr>`;
+}
+function fmtTime(ms) {
+  const n = Number(ms || 0);
+  if (!n) return "";
+  try { return new Date(n).toLocaleString(); } catch { return ""; }
+}
+function shortOrg(account) {
+  const id = account.organization_uuid || "";
+  const suffix = id && id !== "unknown" ? ` (${id.slice(-4)})` : id ? ` (${id})` : "";
+  return `${account.organization_name || "Unknown org"}${suffix}`;
+}
+function accountStatusBadge(account) {
+  const now = Date.now();
+  if (account.status === "disabled") return `<span class="badge danger-badge">disabled</span>`;
+  if (Number(account.cooldown_until || 0) > now) return `<span class="badge warning">cooldown ${esc(fmtTime(account.cooldown_until))}</span>`;
+  return `<span class="badge success">${account.id === state.activeAccountId ? "active" : "available"}</span>`;
+}
+function renderAccounts() {
+  const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+  const active = accounts.find((a) => a.id === state.activeAccountId);
+  const cooling = accounts.filter((a) => a.status !== "disabled" && Number(a.cooldown_until || 0) > Date.now()).length;
+  const banner = $("accountsBanner");
+  if (!accounts.length) {
+    banner.innerHTML = `<span class="dot warn" aria-hidden="true"></span><div>No Claude OAuth accounts in the pool.</div>`;
+  } else {
+    banner.innerHTML = `<span class="dot ${cooling ? "warn" : "ok"}" aria-hidden="true"></span><div>Active: <strong>${esc(active ? active.label : "none")}</strong>${active ? `, org ${esc(shortOrg(active))}` : ""}${cooling ? `; ${cooling} cooling` : ""}</div>`;
+  }
+  $("accountsRows").innerHTML = accounts.length ? accounts.map((a) => `
+    <tr data-account-id="${esc(a.id)}">
+      <td><strong>${esc(a.label || a.id)}</strong>${a.id === state.activeAccountId ? ` <span class="badge success">default</span>` : ""}</td>
+      <td>${esc(a.email || "")}</td>
+      <td>${esc(shortOrg(a))}</td>
+      <td>${accountStatusBadge(a)}</td>
+      <td>${esc(a.subscriptionType || a.rateLimitTier || "")}</td>
+      <td>${esc(fmtTime(a.last_429_at) || "")}</td>
+      <td>
+        <div class="row">
+          <button class="small-btn" type="button" data-account-action="activate">${icon("check")}Activate</button>
+          <button class="small-btn" type="button" data-account-action="test">Test</button>
+          <button class="small-btn" type="button" data-account-action="refresh">${icon("refresh")}Refresh</button>
+          <button class="small-btn" type="button" data-account-action="disable">Disable</button>
+          <button class="small-btn danger" type="button" data-account-action="remove">${icon("trash")}Remove</button>
+        </div>
+      </td>
+    </tr>
+  `).join("") : `<tr><td colspan="7"><span class="soft">No accounts configured.</span></td></tr>`;
 }
 function renderOAuth() {
   const oauthBackends = state.backends.filter((b) => b.oauth || b.authScheme === "oauth");
@@ -1163,6 +1637,301 @@ function renderOAuth() {
     <li><span class="dot ${/not logged in/i.test(state.oauthStatus || "") ? "warn" : "ok"}" aria-hidden="true"></span><div><strong>Claude OAuth:</strong> ${esc(state.oauthStatus || "unknown")} ${oauthBackends.length ? `<span class="soft">(${oauthBackends.map((b) => esc(b.id)).join(", ")})</span>` : ""}</div></li>
     <li><span class="dot ${codexBackends.length ? "ok" : "warn"}" aria-hidden="true"></span><div><strong>Codex OAuth:</strong> ${codexBackends.length ? `configured on ${codexBackends.map((b) => `<code>${esc(b.id)}</code>`).join(", ")}; token is read from <code>~/.codex/auth.json</code> during test/proxy.` : `not configured. Add an <code>openai-responses</code> backend with Codex OAuth to use <code>~/.codex/auth.json</code>.`}</div></li>
   `;
+}
+function enabledBackends() {
+  return (state.backends || []).filter((b) => b.enabled !== false);
+}
+function isCodexBackend(backend) {
+  return !!backend && (backend.codexOauth || backend.authScheme === "codex-oauth" || /codex/i.test(backend.id || ""));
+}
+function isOAuthBackend(backend) {
+  return !!backend && (backend.oauth || backend.authScheme === "oauth");
+}
+function isGlmBackend(backend) {
+  const haystack = [
+    backend && backend.id,
+    backend && backend.name,
+    backend && backend.upstream,
+    ...((backend && backend.modelPatterns) || [])
+  ].join(" ").toLowerCase();
+  return /(^|\W)glm(\W|$)|dashscope|zhipu/.test(haystack);
+}
+function defaultMapperBackendId(tier) {
+  const list = enabledBackends();
+  if (!list.length) return "";
+  if (tier === "fable" || tier === "haiku") {
+    const codex = list.find(isCodexBackend);
+    if (codex) return codex.id;
+  }
+  if (tier === "opus") {
+    const oauth = list.find(isOAuthBackend);
+    if (oauth) return oauth.id;
+  }
+  if (tier === "sonnet") {
+    const glm = list.find(isGlmBackend);
+    if (glm) return glm.id;
+  }
+  return list[0].id;
+}
+function ensureMapperState() {
+  if (!state.mapper) state.mapper = { tiers: {}, modelCache: {}, previewUrl: "", previewBusy: false };
+  if (!state.mapper.tiers) state.mapper.tiers = {};
+  if (!state.mapper.modelCache) state.mapper.modelCache = {};
+  const ids = new Set(enabledBackends().map((b) => b.id));
+  for (const tier of MAPPER_TIERS) {
+    const pick = state.mapper.tiers[tier] || {};
+    const backendId = pick.backendId && ids.has(pick.backendId) ? pick.backendId : defaultMapperBackendId(tier);
+    state.mapper.tiers[tier] = {
+      backendId,
+      model: pick.model || "",
+      custom: !!pick.custom
+    };
+  }
+}
+function mapperPreferredModel(tier, models) {
+  const preferred = MAPPER_DEFAULT_MODELS[tier];
+  const list = Array.isArray(models) ? models : [];
+  if (list.some((m) => m.id === preferred)) return preferred;
+  return list[0] ? list[0].id : "";
+}
+function fillMapperDefaultsForBackend(backendId) {
+  const cache = state.mapper.modelCache[backendId];
+  if (!cache || cache.status !== "loaded") return;
+  for (const tier of MAPPER_TIERS) {
+    const pick = state.mapper.tiers[tier];
+    if (!pick || pick.backendId !== backendId || pick.custom || pick.model) continue;
+    pick.model = mapperPreferredModel(tier, cache.models);
+  }
+}
+async function fetchMapperModels(backendId) {
+  if (!backendId) return;
+  try {
+    const data = await api("GET", `/api/mapper/models/${pathName(backendId)}`);
+    const models = Array.isArray(data.models) ? data.models : [];
+    state.mapper.modelCache[backendId] = {
+      status: data.error ? "error" : "loaded",
+      models,
+      error: data.error || ""
+    };
+    fillMapperDefaultsForBackend(backendId);
+  } catch (error) {
+    state.mapper.modelCache[backendId] = { status: "error", models: [], error: error.message || String(error) };
+  }
+  renderMapper();
+  scheduleMapperPreview();
+}
+function mapperBackendOptions(selected) {
+  const list = enabledBackends();
+  if (!list.length) return `<option value="">No enabled backends</option>`;
+  return list.map((b) => `<option value="${esc(b.id)}" ${b.id === selected ? "selected" : ""}>${esc(b.name || b.id)} (${esc(authLabel(b))})</option>`).join("");
+}
+function mapperModelOptions(tier, pick, cache) {
+  const current = pick.model || "";
+  const models = cache && Array.isArray(cache.models) ? cache.models : [];
+  const ids = new Set(models.map((m) => m.id));
+  const options = [];
+  if (!current) options.push(`<option value="">${cache && cache.status === "loading" ? "Loading models..." : "Select model"}</option>`);
+  if (current && !ids.has(current) && !pick.custom) options.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  for (const model of models) {
+    options.push(`<option value="${esc(model.id)}" ${model.id === current && !pick.custom ? "selected" : ""}>${esc(model.display || model.id)}</option>`);
+  }
+  if (cache && cache.status === "error" && !models.length) options.push(`<option value="">Model list unavailable</option>`);
+  options.push(`<option value="${CUSTOM_MODEL_VALUE}" ${pick.custom ? "selected" : ""}>Custom...</option>`);
+  return options.join("");
+}
+function mapperValidation() {
+  ensureMapperState();
+  const missing = [];
+  for (const tier of MAPPER_TIERS) {
+    const pick = state.mapper.tiers[tier];
+    if (!pick.backendId || !pick.model) missing.push(MAPPER_LABELS[tier][0]);
+  }
+  return { ok: missing.length === 0, missing };
+}
+function mapperPayload() {
+  ensureMapperState();
+  const tiers = {};
+  for (const tier of MAPPER_TIERS) {
+    const pick = state.mapper.tiers[tier];
+    tiers[tier] = { backendId: pick.backendId, model: pick.model };
+  }
+  return { tiers };
+}
+function currentCatchAllRoute() {
+  return (state.routes || []).find((r) => {
+    const p = String(r && r.pattern == null ? "*" : r.pattern).trim();
+    return p === "" || p === "*";
+  }) || { pattern: "*", backendId: "default" };
+}
+function formatMapperRoutes(routes) {
+  return (routes || []).map((r) => `${r.pattern || "*"} -> ${r.backendId || ""}`).join("\n");
+}
+function localMapperRoutesPreview() {
+  const tiers = mapperPayload().tiers;
+  const rows = [];
+  for (const tier of MAPPER_ROUTE_TIERS) {
+    const pick = tiers[tier];
+    rows.push({ pattern: pick.model || `(${tier} missing)`, backendId: pick.backendId || "(backend missing)" });
+  }
+  rows.push(currentCatchAllRoute());
+  return rows;
+}
+function setMapperActionState() {
+  const validation = mapperValidation();
+  const disabled = !validation.ok;
+  $("mapperImport").disabled = disabled;
+  $("mapperApply").disabled = disabled;
+  $("mapperCopy").disabled = disabled;
+  $("mapperStatus").textContent = validation.ok ? "Ready" : `Missing model: ${validation.missing.join(", ")}`;
+  return validation;
+}
+function renderMapperConflictBanner() {
+  const banner = $("mapperConflictBanner");
+  const conflicts = state.osEnvConflicts || [];
+  if (!conflicts.length) {
+    banner.hidden = true;
+    banner.querySelector("div").textContent = "";
+    return;
+  }
+  banner.hidden = false;
+  banner.querySelector("div").innerHTML = `OS env overrides settings.json: ${conflicts.map((k) => `<code>${esc(k)}</code>`).join(", ")}. Unset those variables before Claude Code will use the router profile.`;
+}
+function renderMapper() {
+  ensureMapperState();
+  renderMapperConflictBanner();
+  const pendingLoads = [];
+  const rows = MAPPER_TIERS.map((tier) => {
+    const pick = state.mapper.tiers[tier];
+    let cache = pick.backendId ? state.mapper.modelCache[pick.backendId] : null;
+    if (pick.backendId && !cache) {
+      cache = state.mapper.modelCache[pick.backendId] = { status: "loading", models: [], error: "" };
+      pendingLoads.push(pick.backendId);
+    }
+    const label = MAPPER_LABELS[tier];
+    const error = cache && cache.status === "error" && cache.error ? `<div class="soft">${esc(cache.error)}</div>` : "";
+    return `
+      <div class="mapper-row" data-mapper-tier="${esc(tier)}">
+        <div class="mapper-tier">
+          <strong>${esc(label[0])}</strong>
+          <span>${esc(label[1])}</span>
+        </div>
+        <label>
+          <span>Backend</span>
+          <select data-mapper-field="backend">${mapperBackendOptions(pick.backendId)}</select>
+        </label>
+        <label>
+          <span>Model</span>
+          <select data-mapper-field="model" ${pick.backendId ? "" : "disabled"}>${mapperModelOptions(tier, pick, cache)}</select>
+        </label>
+        <label class="mapper-custom ${pick.custom ? "" : "hide"}">
+          <span>Custom model</span>
+          <input data-mapper-field="custom" type="text" autocomplete="off" value="${esc(pick.custom ? pick.model : "")}" placeholder="${esc(MAPPER_DEFAULT_MODELS[tier])}">
+        </label>
+        ${error ? `<div></div><div></div>${error}` : ""}
+      </div>
+    `;
+  }).join("");
+  $("mapperRows").innerHTML = rows || `<div class="empty">Enable a backend before mapping models.</div>`;
+  $("mapperRoutesPreview").textContent = formatMapperRoutes(localMapperRoutesPreview());
+  const validation = setMapperActionState();
+  if (!validation.ok) {
+    state.mapper.previewUrl = "";
+    $("mapperDeeplinkPreview").textContent = "Complete all four tier models to build the import link.";
+    $("mapperOpenLink").href = "#";
+  } else {
+    $("mapperDeeplinkPreview").textContent = state.mapper.previewUrl || "Building import link...";
+    scheduleMapperPreview();
+  }
+  for (const id of [...new Set(pendingLoads)]) fetchMapperModels(id);
+}
+function scheduleMapperPreview() {
+  clearTimeout(mapperPreviewTimer);
+  mapperPreviewTimer = setTimeout(updateMapperPreview, 180);
+}
+async function updateMapperPreview() {
+  const validation = mapperValidation();
+  if (!validation.ok) return;
+  const seq = ++mapperPreviewSeq;
+  state.mapper.previewBusy = true;
+  try {
+    const data = await api("POST", "/api/mapper/deeplink", mapperPayload());
+    if (seq !== mapperPreviewSeq) return;
+    state.mapper.previewUrl = data.url || "";
+    $("mapperDeeplinkPreview").textContent = state.mapper.previewUrl;
+    $("mapperRoutesPreview").textContent = formatMapperRoutes(data.routes && data.routes.length ? data.routes : localMapperRoutesPreview());
+    $("mapperOpenLink").href = state.mapper.previewUrl || "#";
+  } catch (error) {
+    if (seq !== mapperPreviewSeq) return;
+    state.mapper.previewUrl = "";
+    $("mapperDeeplinkPreview").textContent = error.message || "Could not build import link.";
+  } finally {
+    if (seq === mapperPreviewSeq) state.mapper.previewBusy = false;
+  }
+}
+async function mapperDeepLinkNow() {
+  const data = await api("POST", "/api/mapper/deeplink", mapperPayload());
+  state.mapper.previewUrl = data.url || "";
+  $("mapperDeeplinkPreview").textContent = state.mapper.previewUrl;
+  $("mapperRoutesPreview").textContent = formatMapperRoutes(data.routes && data.routes.length ? data.routes : localMapperRoutesPreview());
+  $("mapperOpenLink").href = state.mapper.previewUrl || "#";
+  return state.mapper.previewUrl;
+}
+function openCcSwitchLink(url) {
+  const link = $("mapperOpenLink");
+  link.href = url;
+  link.click();
+}
+async function importMapperToCcSwitch() {
+  const validation = mapperValidation();
+  if (!validation.ok) return toast(`Missing model: ${validation.missing.join(", ")}`, "warn");
+  $("mapperImport").disabled = true;
+  try {
+    await api("POST", "/api/mapper/apply", mapperPayload());
+    const url = await mapperDeepLinkNow();
+    openCcSwitchLink(url);
+    await loadAll({ quiet: true });
+    toast("Routes saved. Confirm Import in the cc-switch dialog.", "ok");
+  } catch (error) {
+    toast(error.message || "Import failed", "err");
+  } finally {
+    renderMapper();
+  }
+}
+async function applyMapperDirectly() {
+  const validation = mapperValidation();
+  if (!validation.ok) return toast(`Missing model: ${validation.missing.join(", ")}`, "warn");
+  $("mapperApply").disabled = true;
+  try {
+    await api("POST", "/api/mapper/apply", { ...mapperPayload(), writeSettings: true });
+    await loadAll({ quiet: true });
+    toast("Routes and Claude settings updated", "ok");
+  } catch (error) {
+    toast(error.message || "Apply failed", "err");
+  } finally {
+    renderMapper();
+  }
+}
+async function copyMapperLink() {
+  const validation = mapperValidation();
+  if (!validation.ok) return toast(`Missing model: ${validation.missing.join(", ")}`, "warn");
+  let url = state.mapper.previewUrl;
+  try {
+    if (!url) url = await mapperDeepLinkNow();
+    await navigator.clipboard.writeText(url);
+    toast("cc-switch link copied", "ok");
+  } catch (error) {
+    if (!url) {
+      toast(error.message || "Could not build cc-switch link", "err");
+      return;
+    }
+    const temp = document.createElement("textarea");
+    temp.value = url;
+    document.body.appendChild(temp);
+    temp.select();
+    document.execCommand("copy");
+    temp.remove();
+    toast("cc-switch link copied", "ok");
+  }
 }
 function authLabel(backend) {
   if (backend.codexOauth || backend.authScheme === "codex-oauth") return "codex-oauth";
@@ -1214,7 +1983,7 @@ function renderBackends() {
           <button class="small-btn" type="button" data-backend-action="edit">${icon("edit")}Edit</button>
           <button class="small-btn danger" type="button" data-backend-action="delete">${icon("trash")}Delete</button>
         </div>
-        <div class="test-result" data-test-result>Test results appear here.</div>
+        <div class="test-result" data-test-result>${testResults[b.id] ? testResults[b.id].html : "Test results appear here."}</div>
       </article>
     `;
   }).join("");
@@ -1323,6 +2092,46 @@ function updateProfilePreview() {
   $("profilePreview").textContent = JSON.stringify({ env }, null, 2);
 }
 
+function openAccountModal() {
+  lastFocus = document.activeElement;
+  $("accountExchangeCode").value = "";
+  $("accountExchangeState").value = "";
+  $("manualOrgUuid").value = "";
+  $("accountLoginLink").hidden = true;
+  $("accountLoginLink").href = "#";
+  $("accountOrgSelect").innerHTML = `<option value="">${state.accounts.length ? "Choose org or paste UUID" : "Default org"}</option>`;
+  $("accountOrgBanner").querySelector("div").textContent = state.accounts.length
+    ? "Load organizations from the active account, or paste the target organization UUID from claude.ai."
+    : "First account uses the default-org Claude authorize flow.";
+  $("accountModal").hidden = false;
+  $("manualOrgUuid").focus();
+}
+function closeAccountModal() {
+  $("accountModal").hidden = true;
+  if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
+}
+async function loadAccountOrganizations() {
+  const data = await api("GET", "/api/accounts/orgs");
+  const orgs = Array.isArray(data.orgs) ? data.orgs : [];
+  $("accountOrgSelect").innerHTML = `<option value="">${orgs.length ? "Choose org" : "Paste UUID manually"}</option>` + orgs.map((o) => `<option value="${esc(o.uuid)}">${esc(o.name || o.uuid)} (${esc(String(o.uuid).slice(-4))})</option>`).join("");
+  $("accountOrgBanner").querySelector("div").textContent = data.manual
+    ? `Organization lookup unavailable: ${data.error || "paste the target organization UUID manually."}`
+    : `Loaded ${orgs.length} organization${orgs.length === 1 ? "" : "s"}.`;
+}
+function selectedOrgUuid() {
+  return $("manualOrgUuid").value.trim() || $("accountOrgSelect").value.trim();
+}
+async function prepareAccountLogin() {
+  const org = selectedOrgUuid();
+  if (state.accounts.length && !org) throw new Error("Choose or paste an organization UUID for additional accounts.");
+  const body = org ? { organization_uuid: org } : {};
+  const data = await api("POST", "/api/accounts/login-url", body);
+  $("accountExchangeState").value = data.state || "";
+  $("accountLoginLink").href = data.url;
+  $("accountLoginLink").hidden = false;
+  $("accountOrgBanner").querySelector("div").innerHTML = `Authorize URL prepared for ${data.organization_uuid ? `org <code>${esc(data.organization_uuid)}</code>` : "the default org"}.`;
+}
+
 function modelMapToText(map) {
   return Object.entries(map || {}).map(([key, value]) => `${key}: ${value}`).join("\n");
 }
@@ -1414,18 +2223,21 @@ async function testBackend(card, id) {
   const result = card.querySelector("[data-test-result]");
   const button = card.querySelector('[data-backend-action="test"]');
   button.disabled = true;
-  result.textContent = "Testing backend with a 1-token ping.";
+  testsInFlight++;
+  const setRes = (html) => { testResults[id] = { html }; if (result) result.innerHTML = html; };
+  setRes("Testing backend with a 1-token ping.");
   try {
     const data = await api("POST", `/api/backends/${pathName(id)}/test`);
     if (data.ok) {
-      result.innerHTML = `<span class="badge success">Pass</span> <strong>${esc(data.latencyMs)}ms</strong> <span class="soft">model <code>${esc(data.model || "")}</code></span>${data.sample != null ? `<br><span class="soft">Sample:</span> <code>${esc(JSON.stringify(data.sample))}</code>` : ""}`;
+      setRes(`<span class="badge success">Pass</span> <strong>${esc(data.latencyMs)}ms</strong> <span class="soft">model <code>${esc(data.model || "")}</code></span>${data.sample != null ? `<br><span class="soft">Sample:</span> <code>${esc(JSON.stringify(data.sample))}</code>` : ""}`);
     } else {
-      result.innerHTML = `<span class="badge danger-badge">Fail</span> ${esc(data.error || "Backend test failed")}`;
+      setRes(`<span class="badge danger-badge">Fail</span> ${esc(data.error || "Backend test failed")}`);
     }
   } catch (error) {
-    result.innerHTML = `<span class="badge danger-badge">Fail</span> ${esc(error.message)}`;
+    setRes(`<span class="badge danger-badge">Fail</span> ${esc(error.message)}`);
   } finally {
     button.disabled = false;
+    testsInFlight--;
   }
 }
 async function reorderRoutes(index, delta) {
@@ -1484,9 +2296,81 @@ async function saveProfile(event) {
   await loadAll({ quiet: true });
 }
 
+let poolFilterTimer = null;
+function reloadPoolSoon() {
+  clearTimeout(poolFilterTimer);
+  poolFilterTimer = setTimeout(() => loadAll({ quiet: true }), 220);
+}
+function bindPoolEvents() {
+  // Expand/collapse a row (and lazy-load its trace when the trace button is clicked).
+  $("poolBody").addEventListener("click", async (e) => {
+    const traceBtn = e.target.closest("[data-trace]");
+    if (traceBtn) {
+      e.stopPropagation();
+      const id = traceBtn.getAttribute("data-trace");
+      const pre = $(`trace-${id}`);
+      if (!pre) return;
+      if (!pre.hidden) { pre.hidden = true; return; }
+      try {
+        const trace = state.pool.traceCache[id] || await api("GET", `/api/requests/${encodeURIComponent(id)}/trace`);
+        state.pool.traceCache[id] = trace;
+        pre.textContent = JSON.stringify(trace, null, 2);
+        pre.hidden = false;
+      } catch (err) {
+        pre.textContent = "Failed to load trace: " + (err.message || err);
+        pre.hidden = false;
+      }
+      return;
+    }
+    const row = e.target.closest(".pool-row");
+    if (!row) return;
+    const id = row.getAttribute("data-req");
+    state.pool.expanded[id] = !state.pool.expanded[id];
+    renderPool();
+  });
+
+  $("poolStatus").addEventListener("change", () => { state.pool.filters.status = $("poolStatus").value; reloadPoolSoon(); });
+  $("poolBackend").addEventListener("change", () => { state.pool.filters.backend = $("poolBackend").value; reloadPoolSoon(); });
+  $("poolModel").addEventListener("input", () => { state.pool.filters.model = $("poolModel").value.trim(); reloadPoolSoon(); });
+  $("poolQuery").addEventListener("input", () => { state.pool.filters.q = $("poolQuery").value.trim(); reloadPoolSoon(); });
+
+  $("fullTraceToggle").addEventListener("change", async () => {
+    const enabled = $("fullTraceToggle").checked;
+    if (enabled && !confirm("Full trace stores complete prompts and responses locally in ~/.claude-router/request-traces. Enable only while debugging. Continue?")) {
+      $("fullTraceToggle").checked = false;
+      return;
+    }
+    try {
+      const updated = await api("POST", "/api/request-settings", { fullTraceEnabled: enabled });
+      state.pool.settings = updated;
+      toast(enabled ? "Full trace capture enabled" : "Full trace capture disabled", enabled ? "warn" : "ok");
+    } catch (err) {
+      $("fullTraceToggle").checked = !enabled;
+      toast(err.message || "Failed to update trace setting", "err");
+    }
+  });
+
+  $("clearLogs").addEventListener("click", async () => {
+    if (!confirm("Clear all request logs and delete stored traces? This cannot be undone.")) return;
+    try {
+      await api("POST", "/api/requests/clear");
+      state.pool.expanded = {};
+      state.pool.traceCache = {};
+      await loadAll({ quiet: true });
+      toast("Request logs cleared", "ok");
+    } catch (err) {
+      toast(err.message || "Failed to clear logs", "err");
+    }
+  });
+}
+function poolInputFocused() {
+  const a = document.activeElement;
+  return !!(a && a.closest && a.closest(".pool-filters"));
+}
 function bindEvents() {
   $("refreshNow").addEventListener("click", () => loadAll());
   $("autoRefresh").addEventListener("change", () => renderHeader());
+  bindPoolEvents();
   $("adminToken").addEventListener("input", () => {
     sessionStorage.setItem("claudeRouterAdminToken", $("adminToken").value);
   });
@@ -1510,6 +2394,68 @@ function bindEvents() {
     document.documentElement.dataset.theme = next;
     localStorage.setItem("claudeRouterTheme", next);
     $("themeToggle").textContent = `Theme: ${next}`;
+  });
+  $("addAccount").addEventListener("click", openAccountModal);
+  $("closeAccountModal").addEventListener("click", closeAccountModal);
+  $("cancelAccountLogin").addEventListener("click", closeAccountModal);
+  $("loadAccountOrgs").addEventListener("click", async () => {
+    try {
+      await loadAccountOrganizations();
+      toast("Organizations loaded", "ok");
+    } catch (error) {
+      toast(error.message || "Organization lookup failed", "err");
+    }
+  });
+  $("prepareAccountLogin").addEventListener("click", async () => {
+    try {
+      await prepareAccountLogin();
+      toast("Login URL ready", "ok");
+    } catch (error) {
+      toast(error.message || "Could not prepare login", "err");
+    }
+  });
+  $("accountExchangeForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const code = $("accountExchangeCode").value.trim();
+    if (!code) {
+      toast("Paste code#state first", "warn");
+      return;
+    }
+    try {
+      await api("POST", "/api/accounts/exchange", { code, state: $("accountExchangeState").value || undefined });
+      $("accountExchangeCode").value = "";
+      closeAccountModal();
+      await loadAll({ quiet: true });
+      toast("Account added", "ok");
+    } catch (error) {
+      toast(error.message || "OAuth exchange failed", "err");
+    }
+  });
+  $("accountsRows").addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-account-action]");
+    if (!action) return;
+    const row = event.target.closest("[data-account-id]");
+    const id = row && row.dataset.accountId;
+    if (!id) return;
+    const type = action.dataset.accountAction;
+    try {
+      if (type === "test") {
+        const r = await api("POST", `/api/accounts/${pathName(id)}/test`);
+        toast(r.ok ? `✓ ${r.model || ""} — ${r.latencyMs || 0}ms${r.sample ? " · " + r.sample : ""}` : `✗ ${r.error || "test failed"}`, r.ok ? "ok" : "err");
+        return;
+      }
+      if (type === "activate") await api("POST", `/api/accounts/${pathName(id)}/activate`);
+      else if (type === "refresh") await api("POST", `/api/accounts/${pathName(id)}/refresh`);
+      else if (type === "disable") await api("POST", `/api/accounts/${pathName(id)}/disable`);
+      else if (type === "remove") {
+        if (!confirm(`Remove account "${id}" from the pool?`)) return;
+        await api("DELETE", `/api/accounts/${pathName(id)}`);
+      }
+      await loadAll({ quiet: true });
+      toast(type === "remove" ? "Account removed" : "Account updated", "ok");
+    } catch (error) {
+      toast(error.message || "Account action failed", "err");
+    }
   });
   $("exchangeForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1543,6 +2489,49 @@ function bindEvents() {
       toast(error.message || "Logout failed", "err");
     }
   });
+  $("mapperRows").addEventListener("change", (event) => {
+    const field = event.target.dataset.mapperField;
+    if (!field) return;
+    const row = event.target.closest("[data-mapper-tier]");
+    const tier = row && row.dataset.mapperTier;
+    if (!tier || !state.mapper.tiers[tier]) return;
+    const pick = state.mapper.tiers[tier];
+    if (field === "backend") {
+      pick.backendId = event.target.value;
+      pick.model = "";
+      pick.custom = false;
+    } else if (field === "model") {
+      if (event.target.value === CUSTOM_MODEL_VALUE) {
+        pick.custom = true;
+        pick.model = "";
+        setTimeout(() => {
+          const input = document.querySelector(`[data-mapper-tier="${tier}"] [data-mapper-field="custom"]`);
+          if (input) input.focus();
+        }, 0);
+      } else {
+        pick.custom = false;
+        pick.model = event.target.value;
+      }
+    }
+    state.mapper.previewUrl = "";
+    renderMapper();
+    scheduleMapperPreview();
+  });
+  $("mapperRows").addEventListener("input", (event) => {
+    if (event.target.dataset.mapperField !== "custom") return;
+    const row = event.target.closest("[data-mapper-tier]");
+    const tier = row && row.dataset.mapperTier;
+    if (!tier || !state.mapper.tiers[tier]) return;
+    state.mapper.tiers[tier].custom = true;
+    state.mapper.tiers[tier].model = event.target.value.trim();
+    state.mapper.previewUrl = "";
+    setMapperActionState();
+    $("mapperRoutesPreview").textContent = formatMapperRoutes(localMapperRoutesPreview());
+    scheduleMapperPreview();
+  });
+  $("mapperImport").addEventListener("click", importMapperToCcSwitch);
+  $("mapperApply").addEventListener("click", applyMapperDirectly);
+  $("mapperCopy").addEventListener("click", copyMapperLink);
   $("backendsGrid").addEventListener("click", async (event) => {
     const action = event.target.closest("[data-backend-action]");
     if (!action) return;
@@ -1710,7 +2699,7 @@ function init() {
   loadAll({ quiet: true });
   pollTimer = setInterval(() => {
     const editingProfile = document.activeElement && document.activeElement.closest && document.activeElement.closest("#profileForm");
-    if ($("autoRefresh").checked && $("backendModal").hidden && !editingProfile) loadAll({ quiet: true });
+    if ($("autoRefresh").checked && $("backendModal").hidden && $("accountModal").hidden && !editingProfile && !poolInputFocused() && testsInFlight === 0) loadAll({ quiet: true });
   }, 3000);
   window.addEventListener("beforeunload", () => clearInterval(pollTimer));
 }

@@ -1,3 +1,16 @@
 node_modules/
 *.log
 .env
+# local scratch / workflow files
+.*.wf.js
+*.wf.js
+# personal machine-specific helpers (contain local paths/keys)
+settings-to-paste.jsonc
+start.bat
+# router runtime data lives in ~/.claude-router (never in repo), but guard anyway:
+accounts.json
+creds.json
+backends.json
+request-settings.json
+requests*.jsonl
+request-traces/

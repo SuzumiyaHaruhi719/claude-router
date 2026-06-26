@@ -18,8 +18,8 @@ Claude Code ──POST /v1/messages──▶ claude-router (127.0.0.1:8123)
 
 ```sh
 node server.js              # start router + web UI at http://127.0.0.1:8123
-node server.js --selftest   # offline self-checks: PKCE, headers, routing, translation, SSE, maskKey
-node server.js --checkbackends   # live 1-token ping of every configured backend (no listener)
+node server.js --selftest   # offline self-checks: PKCE, account pool, headers, routing, translation, SSE, maskKey
+node server.js --checkbackends   # live 1-token ping of every configured backend; OAuth is checked per account
 ```
 
 Then open **http://127.0.0.1:8123/** to manage backends, routes, and profiles in the UI.
@@ -86,9 +86,48 @@ claude
 ```
 …backs up the original to `~/.claude-router/settings-backup.json`, and sets the active profile. Start a **new Claude Code session** — it now routes through the router. **Restore** writes the backup back. (An already-running Claude Code picks up model changes on its next session, not mid-run — it re-reads env per session.)
 
+**Option C - Model Mapper + cc-switch import:** open the **Model Mapper** section. Pick a backend and model for each Claude Code tier:
+
+- `Fable` is also exported as `ANTHROPIC_MODEL`, so it is the default model Claude Code sends.
+- `Opus`, `Sonnet`, and `Haiku` are exported as first-class cc-switch provider fields (`opusModel`, `sonnetModel`, `haikuModel`).
+- `Fable` plus all `_MODEL_NAME` display values are carried in the deep link's base64 `config` JSON.
+
+The model dropdowns are fetched automatically: Claude OAuth uses `/v1/models` through `anthropicFetch`/curl, Codex uses the curated `gpt-5.5` variants, and DashScope/GLM uses `https://dashscope.aliyuncs.com/compatible-mode/v1/models` through plain `fetch` (not curl).
+
+The default mapping is:
+
+```text
+fable -> codex / gpt-5.5-xhigh
+opus -> Claude OAuth / claude-opus-4-8
+sonnet -> GLM / glm-5.2
+haiku -> codex / gpt-5.5-instant
+```
+
+Click **Import to CC Switch** to save the router routes, then open a deep link like:
+
+```text
+ccswitch://v1/import?resource=provider&app=claude&name=claude-router&endpoint=http%3A%2F%2F127.0.0.1%3A8123&apiKey=claude-router&model=gpt-5.5-xhigh&opusModel=claude-opus-4-8&sonnetModel=glm-5.2&haikuModel=gpt-5.5-instant&config=...&configFormat=json&enabled=true
+```
+
+The browser still prompts to open `ccswitch://`, and cc-switch still shows its import dialog. Confirm that dialog to switch. Use **Copy link** if your browser blocks custom-scheme navigation from the button. Use **Apply** to write `~/.claude/settings.json` directly instead of going through cc-switch; it deep-merges `env`, preserves existing keys such as `permissions`, `mcpServers`, and `theme`, backs up once, and writes atomically.
+
+If your OS or shell already sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`, those environment variables override `settings.json`. The Model Mapper shows the same conflict banner as profiles; unset those variables before expecting Claude Code to use the router profile.
+
 ### The dummy `ANTHROPIC_API_KEY`
 
 `ANTHROPIC_API_KEY=claude-router` is a **non-empty dummy**. Claude Code requires *something* there or it pops a login prompt. The router **ignores** the incoming `x-api-key` entirely and authenticates each backend with its own real key from `backends.json` (or the OAuth token from `creds.json`). It is not a secret.
+
+### Anthropic OAuth account pool
+
+OAuth subscription backends now use `~/.claude-router/accounts.json` as the authoritative pool. The file is written mode `0600`; each account stores one Claude OAuth grant plus token-response metadata (`organization.uuid`, `organization.name`, `account.uuid`, subscription type, and rate-limit tier). `/api/accounts*` read paths always return masked tokens.
+
+- First login may use the generic Claude authorize URL and binds to the account's default org.
+- Additional logins should use the Accounts UI. Choose an org from `GET /api/accounts/orgs` or paste the target org UUID; the router prepares `https://claude.ai/v1/oauth/{organization_uuid}/authorize` so the token is bound to that org.
+- Duplicate `organization_uuid` values are rejected with HTTP 409.
+- Manual Activate changes the preferred default only; Disable excludes an account; Remove deletes it; Refresh renews that account's token. No re-login happens on switch.
+- On proxied `/v1/messages`, OAuth mode selects the active available account, then the next available account by array order. `429` cools the account until `anthropic-ratelimit-unified-reset` when present, otherwise 300s; `529` cools for 600s; repeated `401`/`403` after refresh cool for 1800s; selected blocking `400` bodies disable the account. The same inbound request is retried against the next available account up to the rotation budget.
+- If `accounts.json` does not exist, startup migrates `~/.claude-router/creds.json` first, then `~/.claude/.credentials.json` as a read-only source. Once the pool has accounts, Claude Code piggyback credentials are no longer used for proxied OAuth traffic.
+- All Anthropic-bound calls in this flow (`/v1/oauth/token`, `/v1/messages`, `/api/oauth/profile`, `/api/organizations`) go through `anthropicFetch`/curl because Node HTTP clients can trip Anthropic's TLS-fingerprint gate.
 
 ### Codex (ChatGPT subscription) backend
 
@@ -140,7 +179,7 @@ If you have an OpenAI **API key** instead of a subscription, add a separate `for
 ```sh
 node server.js --selftest
 ```
-Checks PKCE, the `anthropic-beta` merge, header rewriting, **plus** multi-backend routing, request/response/SSE translation, `maskKey`, and a codex/Responses-API section (request translation + scripted Responses SSE → Anthropic SSE + non-stream assembler). Prints `selftest OK (multi-backend + codex/responses)` on success.
+Checks PKCE, the `anthropic-beta` merge, header rewriting, the Model Mapper deep-link/routes/settings env shape, **plus** account-pool behavior, multi-backend routing, request/response/SSE translation, `maskKey`, and a codex/Responses-API section (request translation + scripted Responses SSE → Anthropic SSE + non-stream assembler). Prints `selftest OK (account-pool + multi-backend + codex/responses)` on success.
 
 `node server.js --checkbackends` pings each enabled backend with a 1-token request and prints pass/fail + latency. Exits 0 if all pass, 1 if any fail. (For the OAuth subscription backend this currently returns 429 rate-limit via curl — which confirms the TLS-fingerprint gate is bypassed; see below. For the `codex` backend, `429` is also reported as OK — auth passed, just rate-limited.)
 

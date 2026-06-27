@@ -16,3 +16,6 @@ requests*.jsonl
 request-traces/
 restart-router.bat
 run-router-supervisor.bat
+start-monitor.bat
+monitor.log
+router.log

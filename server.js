@@ -1090,6 +1090,7 @@ async function safeReadText(resp) {
   catch { return ""; }
 }
 function sendUpstreamText(res, up, text) {
+  if (headersDone(res)) { try { if (res && !res.writableEnded) res.end(); } catch {} return; }
   const ct = headerGet(up.headers, "content-type") || "application/json";
   res.writeHead(up.status, { "content-type": ct });
   res.end(text || "");
@@ -3532,15 +3533,22 @@ function readWebui() {
 }
 
 // --- http helpers ----------------------------------------------------------------
+// If a response is already committed (mid-stream when an error is thrown, then the
+// top-level catch calls sendJson) writeHead() throws ERR_HTTP_HEADERS_SENT and crashes
+// the request — guard every header-writer so that can never happen.
+function headersDone(res) { return !res || res.headersSent || res.writableEnded || res.finished; }
 function sendJson(res, code, obj) {
+  if (headersDone(res)) { try { if (res && !res.writableEnded) res.end(); } catch {} return; }
   res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify(obj));
 }
 function sendHtml(res, code, html) {
+  if (headersDone(res)) { try { if (res && !res.writableEnded) res.end(); } catch {} return; }
   res.writeHead(code, { "content-type": "text/html; charset=utf-8" });
   res.end(html);
 }
 function redirect(res, location) {
+  if (headersDone(res)) { try { if (res && !res.writableEnded) res.end(); } catch {} return; }
   res.writeHead(302, { location });
   res.end();
 }

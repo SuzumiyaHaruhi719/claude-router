@@ -15,3 +15,4 @@ request-settings.json
 requests*.jsonl
 request-traces/
 restart-router.bat
+run-router-supervisor.bat

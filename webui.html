@@ -2434,6 +2434,11 @@ function renderOAuth() {
   $("oauthStatusList").innerHTML = `
     <li><span class="dot ${/not logged in/i.test(state.oauthStatus || "") ? "warn" : "ok"}" aria-hidden="true"></span><div><strong>Claude OAuth:</strong> ${esc(state.oauthStatus || "unknown")} ${oauthBackends.length ? `<span class="soft">(${oauthBackends.map((b) => esc(b.id)).join(", ")})</span>` : ""}</div></li>
     <li><span class="dot ${codexBackends.length ? "ok" : "warn"}" aria-hidden="true"></span><div><strong>Codex OAuth:</strong> ${codexBackends.length ? `configured on ${codexBackends.map((b) => `<code>${esc(b.id)}</code>`).join(", ")}; token is read from <code>~/.codex/auth.json</code> during test/proxy.` : `not configured. Add an <code>openai-responses</code> backend with Codex OAuth to use <code>~/.codex/auth.json</code>.`}</div></li>
+    ${codexBackends.map((b) => `
+    <li><span class="dot ${b.fastMode ? "ok" : "warn"}" aria-hidden="true"></span><div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex:1">
+      <div><strong>Fast mode</strong> <span class="soft">on <code>${esc(b.id)}</code></span> — sends <code>service_tier:"priority"</code> for faster responses (burns ChatGPT credits ~2.5× faster, same model).</div>
+      <label class="switch" title="Toggle codex fast mode"><span class="sr-only">Fast mode on ${esc(b.id)}</span><input type="checkbox" data-fastmode-backend="${esc(b.id)}" ${b.fastMode ? "checked" : ""}><span class="track"></span></label>
+    </div></li>`).join("")}
   `;
 }
 function enabledBackends() {
@@ -3895,6 +3900,20 @@ function bindEvents() {
       toast(checked ? "Backend enabled" : "Backend disabled", "ok");
     } catch (error) {
       event.target.checked = !checked;
+      toast(error.message, "err");
+    }
+  });
+  $("oauthStatusList").addEventListener("change", async (event) => {
+    const cb = event.target.closest('[data-fastmode-backend]');
+    if (!cb) return;
+    const id = cb.dataset.fastmodeBackend;
+    const checked = cb.checked;
+    try {
+      await api("PUT", `/api/backends/${pathName(id)}`, { fastMode: checked });
+      await loadAll({ quiet: true });
+      toast(checked ? "Fast mode ON (service_tier: priority)" : "Fast mode OFF", "ok");
+    } catch (error) {
+      cb.checked = !checked;
       toast(error.message, "err");
     }
   });

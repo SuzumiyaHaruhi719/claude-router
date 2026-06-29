@@ -1203,6 +1203,7 @@ function normalizeBackend(b) {
     testModel: codexOauth ? CODEX_RESPONSES_MODEL : (b.testModel || ""),
     enabled: b.enabled !== false,
     throttle,
+    fastMode: codexOauth ? !!b.fastMode : false,   // codex "fast mode" → service_tier:priority
     ...throttleCfg,
   };
 }
@@ -2214,6 +2215,9 @@ async function openaiResponsesTranslate(req, res, backend, body) {
   // for codexOauth. A bearer openai-responses backend against the standard
   // api.openai.com/v1/responses keeps max_output_tokens (the Responses API accepts it).
   if (backend.codexOauth) delete rBody.max_output_tokens;
+  // Fast mode: the chatgpt.com codex endpoint rejects service_tier:"fast" (400) but
+  // accepts "priority" — the prioritized/faster processing tier (burns credits faster).
+  if (backend.codexOauth && backend.fastMode) rBody.service_tier = "priority";
   requestLog.update(logId, { upstreamModel: model, upstream, authScheme: backend.codexOauth ? "codex-oauth" : "bearer" });
   requestLog.trace(logId, { requestBody: body, transformedBody: rBody });
   watchClientAbort(res, logId);
@@ -4492,6 +4496,14 @@ async function selftestCodexResponses() {
   assert(r.stream === true, "resp: stream:true always");
   assert(r.instructions === "You are helpful.", "resp: system → instructions");
   assert(r.max_output_tokens === 100, "resp: max_tokens → max_output_tokens");
+
+  // (a2) fast-mode flag: preserved only for codex-oauth backends, dropped otherwise
+  const codexBe = normalizeBackend({ id: "codex", codexOauth: true, fastMode: true });
+  assert(codexBe.codexOauth === true && codexBe.fastMode === true, "resp: codex backend keeps fastMode");
+  const codexBeOff = normalizeBackend({ id: "codex", codexOauth: true });
+  assert(codexBeOff.fastMode === false, "resp: codex fastMode defaults false");
+  const glmBe = normalizeBackend({ id: "glm", format: "anthropic", fastMode: true });
+  assert(glmBe.fastMode === false, "resp: non-codex backend never carries fastMode");
   assert(r.temperature === 0.5, "resp: temperature passthrough");
   assert(r.top_k === undefined, "resp: top_k dropped");
   assert(r.stop === undefined && r.stop_sequences === undefined, "resp: stop_sequences dropped");

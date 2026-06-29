@@ -737,6 +737,25 @@
     font: 700 11px/1.2 var(--mono);
   }
   .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* quick-switch segmented control on switchable virtual-model cards */
+  .vm-switch { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .vm-switch-btn {
+    min-height: 32px;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-3), transparent 25%);
+    color: var(--muted);
+    font: 700 12px/1.2 var(--font);
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .vm-switch-btn:hover { border-color: var(--primary); color: var(--text); }
+  .vm-switch-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: var(--primary-ink, #fff);
+  }
   .test-result {
     min-height: 44px;
     border: 1px solid var(--line);
@@ -1470,9 +1489,12 @@
     <div class="section-header">
       <div>
         <h2 id="virtualModelsTitle">Virtual Models</h2>
-        <p class="section-copy">A virtual model is a name Claude Code can request that routes per-request by condition (image / web-search / long-context / keyword). No fusion tool-loop — one backend answers each turn. Virtual models resolve <em>before</em> routes.</p>
+        <p class="section-copy">A virtual model is a name Claude Code can request that routes per-request by condition (image / web-search / long-context / keyword), or that you flip by hand between a list of candidate backends. No fusion tool-loop — one backend answers each turn. Virtual models resolve <em>before</em> routes. Add a <strong>router</strong> model, set <code>ANTHROPIC_MODEL=router</code>, and switch backends with one click — no restart.</p>
       </div>
-      <button class="primary" id="addVirtualModel" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add virtual model</button>
+      <div class="row">
+        <button class="primary" id="addRouterModel" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add router model</button>
+        <button id="addVirtualModel" type="button"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add virtual model</button>
+      </div>
     </div>
     <div class="section-body">
       <div class="backend-grid" id="virtualModelsGrid"></div>
@@ -1795,7 +1817,19 @@
         </div>
 
         <fieldset>
-          <legend>Rules (evaluated top-down, first match wins)</legend>
+          <legend>Switchable candidates (one-click manual switch)</legend>
+          <p class="section-copy" style="margin:0 0 8px">Pick or type a backend + model for each candidate. The <strong>Active</strong> one is what requests resolve to (unless a rule below fires). Switch instantly from the card, or here.</p>
+          <div class="table-shell">
+            <table aria-label="Virtual model candidates">
+              <thead><tr><th>Active</th><th>#</th><th>Backend</th><th>Model</th><th>Label</th><th>Actions</th></tr></thead>
+              <tbody id="vmCandidatesBody"></tbody>
+            </table>
+          </div>
+          <button class="small-btn" type="button" id="vmAddCandidate"><svg aria-hidden="true"><use href="#icon-plus"></use></svg>Add candidate</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Rules (evaluated top-down, first match wins — override the active candidate)</legend>
           <div class="table-shell">
             <table aria-label="Virtual model rules">
               <thead><tr><th>#</th><th>When</th><th>Backend</th><th>Model</th><th>Condition input</th><th>Actions</th></tr></thead>
@@ -2802,6 +2836,24 @@ function renderVirtualModels() {
     const ruleChips = rules.length
       ? rules.map((r) => `<span class="chip"><span>${esc(VM_WHEN_LABELS[r.when] || r.when)} → ${esc(r.backendId)}/${esc(r.model)}${r.when === "longContext" ? ` ≥${esc(r.thresholdTokens)}t` : ""}${r.when === "keyword" ? ` «${esc((r.keywords || []).join(", "))}»` : ""}</span></span>`).join("")
       : `<span class="soft">no rules (default only)</span>`;
+    // Quick-switch widget: one-click segmented buttons for a switchable VM (candidates).
+    // Clicking flips the active candidate via POST …/switch. Active one is highlighted.
+    const candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
+    const activeIdx = Number.isInteger(vm.activeCandidate) ? vm.activeCandidate : 0;
+    const enabledIds = new Set(enabledBackends().map((b) => b.id));
+    const switchWidget = candidates.length ? `
+        <div class="kv-grid"><div><strong>Active target:</strong>
+          <div class="vm-switch" role="group" aria-label="Active target for ${esc(vm.name || vm.id)}">
+            ${candidates.map((c, i) => {
+              const live = enabledIds.has(c.backendId);
+              const isActive = i === activeIdx;
+              return `<button class="vm-switch-btn${isActive ? " active" : ""}" type="button"
+                data-vm-action="switch" data-vm-switch-index="${i}" aria-pressed="${isActive ? "true" : "false"}"
+                title="${esc(c.backendId)}/${esc(c.model)}${live ? "" : " (backend missing/disabled)"}">
+                ${esc(c.label || c.model)}${live ? "" : " ⚠"}</button>`;
+            }).join("")}
+          </div>
+        </div></div>` : "";
     return `
       <article class="backend-card" data-vm-id="${esc(vm.id)}">
         <div class="card-head">
@@ -2819,6 +2871,7 @@ function renderVirtualModels() {
           <span class="badge ${vm.enabled !== false ? "success" : ""}">${vm.enabled !== false ? "enabled" : "disabled"}</span>
           <div class="chip-row">${match.map((p) => `<span class="chip"><span>${esc(p)}</span></span>`).join("")}</div>
         </div>
+        ${switchWidget}
         <div class="kv-grid">
           <div><strong>Rules:</strong><div class="chip-row">${ruleChips}</div></div>
           <div><strong>Default:</strong> <code>${esc(vm.default.backendId)}/${esc(vm.default.model)}</code></div>
@@ -2843,10 +2896,33 @@ const VM_SAMPLE_TEXT = JSON.stringify({
   system: "You are helpful.", messages: [{ role: "user", content: "Hello, what is 2+2?" }],
 }, null, 2);
 
+// Per-backend model-list cache for the candidate model pickers. Shared with the Model
+// Mapper (same /api/mapper/models/:backendId data) so a backend fetched in either place
+// is reused. Guarded by ensureMapperState() which creates state.mapper.modelCache.
+function vmModelCacheGet(backendId) { ensureMapperState(); return state.mapper.modelCache[backendId] || null; }
+function vmModelCacheSet(backendId, value) { ensureMapperState(); state.mapper.modelCache[backendId] = value; return value; }
+async function fetchVmModels(backendId) {
+  if (!backendId) return;
+  try {
+    const data = await api("GET", `/api/mapper/models/${pathName(backendId)}`);
+    const models = Array.isArray(data.models) ? data.models : [];
+    vmModelCacheSet(backendId, { status: data.error ? "error" : "loaded", models, error: data.error || "" });
+  } catch (error) {
+    vmModelCacheSet(backendId, { status: "error", models: [], error: error.message || String(error) });
+  }
+  if (vmDraft && !$("virtualModelModal").hidden) renderVmCandidates();
+}
+
 function newVmDraft() {
-  return { id: "", name: "", enabled: true, match: [], rules: [], default: { backendId: "", model: "" } };
+  return { id: "", name: "", enabled: true, match: [], rules: [], default: { backendId: "", model: "" }, candidates: [], activeCandidate: 0 };
+}
+// A candidate's `custom` flag is UI-only (mirrors the mapper's pick.custom): when set,
+// the model picker shows a free-type input instead of the dropdown. Stripped on save.
+function cloneVmCandidate(c) {
+  return { backendId: (c && c.backendId) || "", model: (c && c.model) || "", label: (c && c.label) || "", custom: !!(c && c.custom) };
 }
 function cloneVmDraft(vm) {
+  const candidates = (Array.isArray(vm.candidates) ? vm.candidates : []).map(cloneVmCandidate);
   return {
     id: vm.id || "",
     name: vm.name || vm.id || "",
@@ -2854,9 +2930,12 @@ function cloneVmDraft(vm) {
     match: Array.isArray(vm.match) ? vm.match.slice() : [],
     rules: (Array.isArray(vm.rules) ? vm.rules : []).map((r) => ({ ...r })),
     default: { backendId: (vm.default && vm.default.backendId) || "", model: (vm.default && vm.default.model) || "" },
+    candidates,
+    activeCandidate: Number.isInteger(vm.activeCandidate) ? Math.max(0, Math.min(vm.activeCandidate, Math.max(0, candidates.length - 1))) : 0,
   };
 }
-function openVmModal(vm) {
+function openVmModal(vm, opts) {
+  opts = opts || {};
   lastFocus = document.activeElement;
   const editing = !!vm;
   vmDraft = editing ? cloneVmDraft(vm) : newVmDraft();
@@ -2864,10 +2943,18 @@ function openVmModal(vm) {
   const list = enabledBackends();
   const firstId = list[0] ? list[0].id : "";
   if (!vmDraft.default.backendId && firstId) vmDraft.default.backendId = firstId;
-  if (!editing && !vmDraft.rules.length) {
+  if (opts.router) {
+    // "Add router model" preset: id "router", match ["router"], candidate-driven (no rule
+    // auto-added). User adds candidates; default is set to the first candidate on save.
+    vmDraft.id = "router";
+    vmDraft.name = "Router (switchable)";
+    vmDraft.match = ["router"];
+    vmDraft.rules = [];
+    if (firstId) vmDraft.candidates.push({ backendId: firstId, model: "", label: "", custom: false });
+  } else if (!editing && !vmDraft.rules.length) {
     vmDraft.rules.push({ when: "hasImage", backendId: firstId, model: "" });
   }
-  $("virtualModelModalTitle").textContent = editing ? `Edit virtual model ${vm.id}` : "Add virtual model";
+  $("virtualModelModalTitle").textContent = editing ? `Edit virtual model ${vm.id}` : (opts.router ? "Add router model" : "Add virtual model");
   $("vmOriginalId").value = editing ? vm.id : "";
   $("vmId").value = vmDraft.id;
   $("vmId").disabled = editing;
@@ -2889,9 +2976,66 @@ function closeVmModal() {
 }
 function renderVmEditor() {
   if (!vmDraft) return;
+  renderVmCandidates();
+  renderVmRules();
+}
+// Pick-or-type model options for a candidate row, mirroring the Model Mapper UX. The
+// model list is fetched from /api/mapper/models/:backendId and cached per backend (shared
+// with the mapper's cache — same data). A trailing "Custom..." option flips to free-type.
+function vmCandidateModelOptions(cand, cache) {
+  const current = cand.model || "";
+  const models = cache && Array.isArray(cache.models) ? cache.models : [];
+  const ids = new Set(models.map((m) => m.id));
+  const options = [];
+  if (!current && !cand.custom) options.push(`<option value="">${cache && cache.status === "loading" ? "Loading models..." : "Select model"}</option>`);
+  if (current && !ids.has(current) && !cand.custom) options.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  for (const model of models) {
+    options.push(`<option value="${esc(model.id)}" ${model.id === current && !cand.custom ? "selected" : ""}>${esc(model.display || model.id)}</option>`);
+  }
+  if (cache && cache.status === "error" && !models.length) options.push(`<option value="">Model list unavailable</option>`);
+  options.push(`<option value="${CUSTOM_MODEL_VALUE}" ${cand.custom ? "selected" : ""}>Custom...</option>`);
+  return options.join("");
+}
+function renderVmCandidates() {
+  if (!vmDraft) return;
+  const body = $("vmCandidatesBody");
+  const candidates = Array.isArray(vmDraft.candidates) ? vmDraft.candidates : [];
+  if (!candidates.length) {
+    body.innerHTML = `<tr><td colspan="6"><div class="empty">No candidates. Add one or more to make this a one-click switchable model. (Leave empty for a classic rules + default virtual model.)</div></td></tr>`;
+    return;
+  }
+  const active = Number.isInteger(vmDraft.activeCandidate) ? vmDraft.activeCandidate : 0;
+  const pendingLoads = [];
+  body.innerHTML = candidates.map((cand, index) => {
+    let cache = cand.backendId ? vmModelCacheGet(cand.backendId) : null;
+    if (cand.backendId && !cache) { cache = vmModelCacheSet(cand.backendId, { status: "loading", models: [], error: "" }); pendingLoads.push(cand.backendId); }
+    const customCell = cand.custom
+      ? `<input type="text" data-vm-cand-field="customModel" value="${esc(cand.model || "")}" placeholder="glm-5.2" aria-label="Custom model for candidate ${index + 1}">`
+      : "";
+    return `
+      <tr data-vm-cand-index="${index}">
+        <td><input type="radio" name="vmActiveCandidate" data-vm-cand-action="active" ${index === active ? "checked" : ""} aria-label="Set candidate ${index + 1} active"></td>
+        <td>
+          <div class="order-cell">
+            <span class="mono">${index + 1}</span>
+            <button class="icon-only small-btn" type="button" data-vm-cand-action="up" aria-label="Move candidate ${index + 1} up" ${index === 0 ? "disabled" : ""}>${icon("up")}</button>
+            <button class="icon-only small-btn" type="button" data-vm-cand-action="down" aria-label="Move candidate ${index + 1} down" ${index === candidates.length - 1 ? "disabled" : ""}>${icon("down")}</button>
+          </div>
+        </td>
+        <td><select data-vm-cand-field="backendId" aria-label="Backend for candidate ${index + 1}">${vmBackendOptions(cand.backendId)}</select></td>
+        <td><select data-vm-cand-field="model" aria-label="Model for candidate ${index + 1}" ${cand.backendId ? "" : "disabled"}>${vmCandidateModelOptions(cand, cache)}</select>${customCell}</td>
+        <td><input type="text" data-vm-cand-field="label" value="${esc(cand.label || "")}" placeholder="${esc(cand.model || "label")}" aria-label="Label for candidate ${index + 1}"></td>
+        <td><button class="icon-only danger" type="button" data-vm-cand-action="delete" aria-label="Delete candidate ${index + 1}">${icon("trash")}</button></td>
+      </tr>
+    `;
+  }).join("");
+  for (const id of [...new Set(pendingLoads)]) fetchVmModels(id);
+}
+function renderVmRules() {
+  if (!vmDraft) return;
   const body = $("vmRulesBody");
   if (!vmDraft.rules.length) {
-    body.innerHTML = `<tr><td colspan="6"><div class="empty">No rules. Only the default target will be used. Add a rule to route by condition.</div></td></tr>`;
+    body.innerHTML = `<tr><td colspan="6"><div class="empty">No rules. Only the active candidate / default target will be used. Add a rule to route by condition.</div></td></tr>`;
     return;
   }
   body.innerHTML = vmDraft.rules.map((rule, index) => {
@@ -2968,6 +3112,63 @@ function vmDeleteRule(index) {
   renderVmEditor();
 }
 
+// --- candidate rows (the switchable list) ---------------------------------------
+function vmCandidateFromRow(index) {
+  const row = document.querySelector(`tr[data-vm-cand-index="${index}"]`);
+  if (!row || !vmDraft) return null;
+  const get = (field) => { const el = row.querySelector(`[data-vm-cand-field="${field}"]`); return el ? el.value : null; };
+  const cand = vmDraft.candidates[index] || { backendId: "", model: "", label: "", custom: false };
+  cand.backendId = get("backendId") || cand.backendId || "";
+  cand.label = (get("label") || "").trim();
+  // model: from the dropdown unless "Custom..." is selected, then from the free-type input.
+  const sel = get("model");
+  if (cand.custom) {
+    cand.model = (get("customModel") || "").trim();
+  } else if (sel != null && sel !== CUSTOM_MODEL_VALUE) {
+    cand.model = sel.trim();
+  }
+  vmDraft.candidates[index] = cand;
+  return cand;
+}
+function vmSyncAllCandidatesFromDom() {
+  if (!vmDraft) return;
+  for (let i = 0; i < (vmDraft.candidates || []).length; i++) vmCandidateFromRow(i);
+}
+function vmAddCandidate() {
+  if (!vmDraft) return;
+  vmSyncAllCandidatesFromDom();
+  const firstId = enabledBackends()[0] ? enabledBackends()[0].id : "";
+  vmDraft.candidates.push({ backendId: firstId, model: "", label: "", custom: false });
+  renderVmCandidates();
+}
+function vmMoveCandidate(index, delta) {
+  if (!vmDraft) return;
+  vmSyncAllCandidatesFromDom();
+  const target = index + delta;
+  if (target < 0 || target >= vmDraft.candidates.length) return;
+  const active = vmDraft.activeCandidate;
+  const [moved] = vmDraft.candidates.splice(index, 1);
+  vmDraft.candidates.splice(target, 0, moved);
+  // keep the active pointer on the same candidate after reorder
+  if (active === index) vmDraft.activeCandidate = target;
+  else if (active === target) vmDraft.activeCandidate = active < index ? active + 1 : active - 1;
+  renderVmCandidates();
+}
+function vmDeleteCandidate(index) {
+  if (!vmDraft) return;
+  vmSyncAllCandidatesFromDom();
+  vmDraft.candidates.splice(index, 1);
+  if (vmDraft.activeCandidate >= vmDraft.candidates.length) vmDraft.activeCandidate = Math.max(0, vmDraft.candidates.length - 1);
+  else if (vmDraft.activeCandidate > index) vmDraft.activeCandidate -= 1;
+  renderVmCandidates();
+}
+function vmSetActiveCandidate(index) {
+  if (!vmDraft) return;
+  vmSyncAllCandidatesFromDom();
+  vmDraft.activeCandidate = index;
+  // no full re-render needed for the radio, but keep state authoritative
+}
+
 // Client-side mirror of the server predicates (server.js ruleMatches/evaluateVirtualModel).
 // Kept in sync manually; used only for the live preview pane (the server is the authority
 // at request time). Tolerates body === null.
@@ -3013,14 +3214,26 @@ function vmRuleMatches(rule, body) {
 }
 function vmEvaluateDraft(body) {
   if (!vmDraft) return null;
+  // Mirror server evaluateVirtualModel: rules → active candidate (skip disabled/missing
+  // backends) → default. Uses the live enabled-backend set for the validity check.
   for (const rule of vmDraft.rules) {
     if (vmRuleMatches(rule, body)) return { matchedRule: rule.when, backendId: rule.backendId, model: rule.model };
+  }
+  const candidates = Array.isArray(vmDraft.candidates) ? vmDraft.candidates : [];
+  if (candidates.length) {
+    const enabledIds = new Set(enabledBackends().map((b) => b.id));
+    const start = Math.max(0, Math.min(vmDraft.activeCandidate || 0, candidates.length - 1));
+    for (let i = 0; i < candidates.length; i++) {
+      const cand = candidates[(start + i) % candidates.length];
+      if (cand.model && enabledIds.has(cand.backendId)) return { matchedRule: "active", backendId: cand.backendId, model: cand.model };
+    }
   }
   return { matchedRule: "default", backendId: vmDraft.default.backendId, model: vmDraft.default.model };
 }
 function vmRunPreview() {
   if (!vmDraft) return;
   vmSyncAllRulesFromDom();
+  vmSyncAllCandidatesFromDom();
   // also sync default + top-level fields from the DOM (they may be mid-edit)
   vmDraft.default.backendId = $("vmDefaultBackend").value;
   vmDraft.default.model = $("vmDefaultModel").value.trim();
@@ -3035,8 +3248,29 @@ function vmRunPreview() {
 }
 function vmPayloadFromForm() {
   vmSyncAllRulesFromDom();
+  vmSyncAllCandidatesFromDom();
   const id = $("vmId").value.trim();
   const match = $("vmMatch").value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+  // Candidates: keep only rows with both a backend + model (the server drops the rest,
+  // but pruning here keeps activeCandidate aligned with what we send). Strip the UI-only
+  // `custom` flag. label is optional (server defaults it to model).
+  const rawCandidates = (Array.isArray(vmDraft.candidates) ? vmDraft.candidates : []);
+  const activeBackendId = (rawCandidates[vmDraft.activeCandidate] || {}).backendId;
+  const activeModel = (rawCandidates[vmDraft.activeCandidate] || {}).model;
+  const candidates = rawCandidates
+    .filter((c) => c.backendId && c.model)
+    .map((c) => ({ backendId: c.backendId, model: c.model, ...(c.label ? { label: c.label } : {}) }));
+  // recompute the active index against the pruned list (match by identity of the picked row)
+  let activeCandidate = 0;
+  if (candidates.length && activeBackendId && activeModel) {
+    const i = candidates.findIndex((c) => c.backendId === activeBackendId && c.model === activeModel);
+    if (i >= 0) activeCandidate = i;
+  }
+  // default: from the form; if empty but candidates exist (e.g. the router preset), derive
+  // it from the first candidate so a VM is always resolvable.
+  let defBackendId = $("vmDefaultBackend").value;
+  let defModel = $("vmDefaultModel").value.trim();
+  if ((!defBackendId || !defModel) && candidates.length) { defBackendId = defBackendId || candidates[0].backendId; defModel = defModel || candidates[0].model; }
   return {
     id: id || undefined,
     name: $("vmName").value.trim() || id || undefined,
@@ -3048,14 +3282,21 @@ function vmPayloadFromForm() {
       if (r.when === "keyword") out.keywords = r.keywords;
       return out;
     }),
-    default: { backendId: $("vmDefaultBackend").value, model: $("vmDefaultModel").value.trim() },
+    candidates,
+    activeCandidate,
+    default: { backendId: defBackendId, model: defModel },
   };
 }
 async function saveVirtualModel(event) {
   event.preventDefault();
   const editing = $("vmOriginalId").value;
+  // warn on a half-filled candidate row before it gets silently pruned
+  for (let i = 0; i < (vmDraft.candidates || []).length; i++) {
+    const c = vmDraft.candidates[i];
+    if ((c.backendId && !c.model) || (!c.backendId && c.model)) { toast(`Candidate ${i + 1} needs both a backend and a model`, "warn"); return; }
+  }
   const payload = vmPayloadFromForm();
-  if (!payload.default.backendId || !payload.default.model) { toast("Default target (backend + model) is required", "warn"); return; }
+  if (!payload.default.backendId || !payload.default.model) { toast("Default target (backend + model) is required — add a candidate or set a default", "warn"); return; }
   for (const r of payload.rules) { if (!r.backendId || !r.model) { toast(`Rule "${r.when}" needs both a backend and a model`, "warn"); return; } }
   try {
     if (editing) {
@@ -3085,6 +3326,30 @@ async function deleteVirtualModel(id) {
     await loadAll({ quiet: true });
     toast("Virtual model deleted", "ok");
   } catch (error) { toast(error.message, "err"); await loadAll({ quiet: true }); }
+}
+// One-click quick-switch: flip the active candidate of a switchable VM. Optimistically
+// highlights the chosen button (so it feels instant), then persists via POST …/switch and
+// re-syncs from the server response.
+async function switchVirtualModelCandidate(id, index) {
+  const vm = (Array.isArray(state.virtualModels) ? state.virtualModels : []).find((v) => v.id === id);
+  if (!vm || !Array.isArray(vm.candidates) || !vm.candidates.length) return;
+  if (!Number.isInteger(index) || index < 0 || index >= vm.candidates.length) return;
+  if (vm.activeCandidate === index) return; // no-op: already active
+  const prev = vm.activeCandidate;
+  vm.activeCandidate = index;               // optimistic
+  renderVirtualModels();
+  try {
+    const updated = await api("POST", `/api/virtual-models/${pathName(id)}/switch`, { index });
+    const i = state.virtualModels.findIndex((v) => v.id === id);
+    if (i >= 0 && updated && updated.id) state.virtualModels[i] = updated;
+    renderVirtualModels();
+    const cand = (updated && updated.candidates && updated.candidates[updated.activeCandidate]) || null;
+    toast(`Router now → ${cand ? (cand.label || cand.model) : "candidate " + index}`, "ok");
+  } catch (error) {
+    vm.activeCandidate = prev;              // revert on failure
+    renderVirtualModels();
+    toast(error.message || String(error), "err");
+  }
 }
 function renderProfiles() {
   const names = Object.keys(state.profiles || {});
@@ -3717,6 +3982,16 @@ function bindEvents() {
     if (!enabledBackends().length) { toast("Add a backend before defining a virtual model", "warn"); return; }
     openVmModal(null);
   });
+  $("addRouterModel").addEventListener("click", () => {
+    if (!enabledBackends().length) { toast("Add a backend before defining a router model", "warn"); return; }
+    if ((state.virtualModels || []).some((v) => v.id === "router")) {
+      // already exists → open it for editing rather than colliding
+      openVmModal((state.virtualModels || []).find((v) => v.id === "router"));
+      toast("A router model already exists — editing it", "ok");
+      return;
+    }
+    openVmModal(null, { router: true });
+  });
   $("virtualModelsGrid").addEventListener("click", async (event) => {
     const card = event.target.closest("[data-vm-id]");
     if (!card) return;
@@ -3730,6 +4005,9 @@ function bindEvents() {
       // let the checkbox visual flip first, then persist the new state
       const enabled = actionEl.checked;
       await toggleVirtualModel(id, enabled);
+    } else if (action === "switch") {
+      const index = Number(actionEl.dataset.vmSwitchIndex);
+      await switchVirtualModelCandidate(id, index);
     } else if (action === "edit") {
       openVmModal(vm);
     } else if (action === "delete") {
@@ -3764,6 +4042,52 @@ function bindEvents() {
       if (vmDraft.rules[index].when === "keyword" && !Array.isArray(vmDraft.rules[index].keywords)) vmDraft.rules[index].keywords = [];
       renderVmEditor();
     }
+  });
+  // --- candidate rows ---
+  $("vmAddCandidate").addEventListener("click", vmAddCandidate);
+  $("vmCandidatesBody").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-vm-cand-action]");
+    if (!btn) return;
+    const row = event.target.closest("[data-vm-cand-index]");
+    const index = Number(row && row.dataset.vmCandIndex);
+    const action = btn.dataset.vmCandAction;
+    if (action === "up") vmMoveCandidate(index, -1);
+    else if (action === "down") vmMoveCandidate(index, 1);
+    else if (action === "delete") vmDeleteCandidate(index);
+    else if (action === "active") vmSetActiveCandidate(index);
+  });
+  $("vmCandidatesBody").addEventListener("change", (event) => {
+    const field = event.target.closest("[data-vm-cand-field]");
+    const radio = event.target.closest('[data-vm-cand-action="active"]');
+    const row = event.target.closest("[data-vm-cand-index]");
+    const index = Number(row && row.dataset.vmCandIndex);
+    if (!vmDraft || !vmDraft.candidates[index]) return;
+    if (radio) { vmSetActiveCandidate(index); return; }
+    if (!field) return;
+    const which = field.dataset.vmCandField;
+    if (which === "backendId") {
+      // capture other in-progress edits, switch backend, reset model to a fresh pick,
+      // then re-render so the model dropdown reloads for the new backend.
+      vmSyncAllCandidatesFromDom();
+      vmDraft.candidates[index].backendId = field.value;
+      vmDraft.candidates[index].model = "";
+      vmDraft.candidates[index].custom = false;
+      renderVmCandidates();
+    } else if (which === "model") {
+      vmSyncAllCandidatesFromDom();
+      if (field.value === CUSTOM_MODEL_VALUE) {
+        // Preserve the current picked model as the initial custom value. Clearing it here
+        // turns a normal "make this model custom/editable" action into data loss until
+        // the user retypes the model by hand.
+        vmDraft.candidates[index].custom = true;
+        vmDraft.candidates[index].model = vmDraft.candidates[index].model || "";
+      } else {
+        vmDraft.candidates[index].custom = false;
+        vmDraft.candidates[index].model = field.value;
+      }
+      renderVmCandidates();
+    }
+    // label + customModel free-type inputs are captured by vmSyncAllCandidatesFromDom on save.
   });
   $("vmPreviewImage").addEventListener("click", () => { $("vmPreviewBody").value = VM_SAMPLE_IMAGE; vmRunPreview(); });
   $("vmPreviewText").addEventListener("click", () => { $("vmPreviewBody").value = VM_SAMPLE_TEXT; vmRunPreview(); });

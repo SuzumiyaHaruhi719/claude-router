@@ -195,6 +195,30 @@ A **virtual model** is a client-facing model *name* (e.g. `fusion-smart`) that C
 - **Dangling `backendId`** in a matched rule (e.g. a backend was deleted after the rule was saved) degrades gracefully — the router falls back to glob-routing the resolved model instead of a hard 502.
 - **REST API:** `GET/POST /api/virtual-models`, `PUT/DELETE /api/virtual-models/:id` (admin-guarded writes), and a read-only `POST /api/virtual-models/:id/preview` (send a sample body → `{matchedRule, backendId, model}`). The WebUI has a Virtual Models section with a reorderable rule editor and a live preview pane.
 
+### Switchable `router` model (one-click manual switch)
+
+A virtual model can also be a **manual switch**: add an optional `candidates[]` list and an `activeCandidate` index, and the VM resolves to whichever candidate you've currently selected — flipped with one click in the WebUI, no Claude Code restart, no config edits.
+
+```jsonc
+{
+  "id": "router", "name": "Router (switchable)", "match": ["router"],
+  "candidates": [
+    { "backendId": "glm",     "model": "glm-5.2",         "label": "GLM 5.2" },
+    { "backendId": "minimax", "model": "minimax-m3",      "label": "MiniMax M3" },
+    { "backendId": "default", "model": "claude-opus-4-8", "label": "Opus 4.8" }
+  ],
+  "activeCandidate": 0,
+  "rules": [],                                          // optional auto-rules still layer on top
+  "default": { "backendId": "glm", "model": "glm-5.2" } // final fallback
+}
+```
+
+**Resolution precedence** (in `evaluateVirtualModel`): **rules** (if any fire → override) → **active candidate** (skipping any candidate whose backend is missing/disabled, falling to the next valid one) → **default**. So: candidates + no rules = a pure manual switch; rules + candidates = rules win when they fire, otherwise your manual pick. A VM with no `candidates` is unchanged (rules → default).
+
+- **Quick-switch:** `POST /api/virtual-models/:id/switch {"index": <int>}` (admin-guarded) flips `activeCandidate` (clamped), persists, and is live on the next request. 400 if the VM has no candidates, 404 if not found.
+- **WebUI:** switchable VM cards show a one-click segmented widget (active highlighted); the editor modal has a candidate list (backend dropdown + pick-or-type model picker with a **Custom…** option) and an **Add router model** button that pre-fills `id: router` / `match: ["router"]`.
+- **Use it from Claude Code:** set `ANTHROPIC_MODEL=router` (env or a Model Mapper tier). Claude Code sends `model: "router"`; the router forwards to the active candidate. Switch backends mid-session from the dashboard.
+
 ## Security
 
 - **Localhost-only:** `HOST = 127.0.0.1` — never listens on a public interface.

@@ -1283,6 +1283,19 @@ function normalizeVirtualRule(r) {
 // discipline: downstream code can trust the shape. Not frozen (consistency with the
 // rest of the config layer; resolveVirtualModel returns a fresh clone before any
 // per-request scratch field is written, so the cfg-level object is never mutated).
+// One switchable-candidate target: { backendId, model, label }. label is cosmetic
+// (defaults to model). Returns null for entries missing backendId or model (dropped).
+// backendId need NOT reference an existing/enabled backend here — validity is checked
+// at resolution time (evaluateVirtualModel), so a candidate may name a backend you add
+// later (free-type). Mirrors normalizeVirtualRule discipline.
+function normalizeVirtualCandidate(c) {
+  if (!c || typeof c !== "object") return null;
+  const backendId = String(c.backendId || "").trim();
+  const model = String(c.model || "").trim();
+  if (!backendId || !model) return null;
+  const label = c.label != null && String(c.label).trim() ? String(c.label).trim() : model;
+  return { backendId, model, label };
+}
 function normalizeVirtualModel(v) {
   if (!v || typeof v !== "object") return null;
   const id = String(v.id || "");
@@ -1296,7 +1309,16 @@ function normalizeVirtualModel(v) {
   const defBackendId = dflt ? String(dflt.backendId || "") : "";
   const defModel = dflt ? String(dflt.model || "") : "";
   if (!defBackendId || !defModel) return null;             // a VM must always be resolvable
-  return { id, name, enabled, match, rules, default: { backendId: defBackendId, model: defModel } };
+  const out = { id, name, enabled, match, rules, default: { backendId: defBackendId, model: defModel } };
+  // Switchable candidates (optional, additive). A VM with no valid candidates keeps the
+  // exact legacy shape above — the keys are only attached when candidates exist, so
+  // saved JSON + downstream behaviour are byte-identical for classic rules+default VMs.
+  const candidates = Array.isArray(v.candidates) ? v.candidates.map(normalizeVirtualCandidate).filter(Boolean) : [];
+  if (candidates.length) {
+    out.candidates = candidates;
+    out.activeCandidate = clampInt(v.activeCandidate, 0, 0, candidates.length - 1);
+  }
+  return out;
 }
 function normalizeVirtualModels(list) {
   if (!Array.isArray(list)) return [];
@@ -1479,7 +1501,13 @@ function resolveVirtualModel(cfg, model) {
   for (const vm of vms) {
     if (vm.enabled === false) continue;
     if ((vm.match || []).some((p) => matchPattern(m, p))) {
-      return { ...vm, rules: vm.rules.map((r) => ({ ...r })), default: { ...vm.default } };
+      return {
+        ...vm,
+        rules: vm.rules.map((r) => ({ ...r })),
+        default: { ...vm.default },
+        // candidates is optional; clone it too so per-request scratch never touches cfg.
+        ...(Array.isArray(vm.candidates) ? { candidates: vm.candidates.map((c) => ({ ...c })) } : {}),
+      };
     }
   }
   return null;
@@ -1488,12 +1516,32 @@ function resolveVirtualModel(cfg, model) {
 // synchronous; stashes the chosen target on the (per-request clone) vm._resolvedTarget
 // so proxy() can look the backend up directly without re-evaluating.
 function evaluateVirtualModel(vm, body, cfg) {
+  // 1. Rules layer on top: if any auto-rule fires, it wins (over the manual switch).
   for (const rule of vm.rules) {
     if (ruleMatches(rule, body)) {
       const t = { backendId: rule.backendId, model: rule.model, matchedRule: rule.when };
       vm._resolvedTarget = t; return t;
     }
   }
+  // 2. Active candidate (the manual switch). Skip candidates whose backend is missing or
+  // disabled, falling to the next valid candidate in order — same "find enabled backend
+  // by id" check proxy() uses, so a stale candidate degrades to the next pick / default
+  // rather than 502-ing. Starts at activeCandidate, then wraps through the remainder.
+  const candidates = Array.isArray(vm.candidates) ? vm.candidates : [];
+  if (candidates.length) {
+    const backends = (cfg && Array.isArray(cfg.backends)) ? cfg.backends : [];
+    const enabledById = (id) => backends.some((b) => b.id === id && b.enabled !== false);
+    const start = clampInt(vm.activeCandidate, 0, 0, candidates.length - 1);
+    for (let i = 0; i < candidates.length; i++) {
+      const cand = candidates[(start + i) % candidates.length];
+      if (enabledById(cand.backendId)) {
+        const t = { backendId: cand.backendId, model: cand.model, matchedRule: "active" };
+        vm._resolvedTarget = t; return t;
+      }
+    }
+    // none of the candidates' backends are currently valid → fall through to default.
+  }
+  // 3. Default (final fallback).
   const t = { backendId: vm.default.backendId, model: vm.default.model, matchedRule: "default" };
   vm._resolvedTarget = t; return t;
 }
@@ -3731,6 +3779,20 @@ async function apiUpdateVirtualModel(req, id) {
   const cur = list[idx];
   // Deep-merge allowed fields; id is immutable. Arrays (match/rules) replace when
   // provided; default target is shallow-merged (it is just {backendId, model}).
+  // If a PUT replaces candidates but omits activeCandidate, keep the active pointer on
+  // the same backend/model identity when possible. Otherwise a reorder silently switches
+  // the active route because activeCandidate is an index, not an ID.
+  const patchHasCandidates = Array.isArray(patch.candidates);
+  let activeCandidate = patch.activeCandidate != null ? patch.activeCandidate : cur.activeCandidate;
+  if (patchHasCandidates && patch.activeCandidate == null) {
+    const oldActive = Array.isArray(cur.candidates) ? cur.candidates[cur.activeCandidate || 0] : null;
+    const nextCandidates = patch.candidates.map(normalizeVirtualCandidate).filter(Boolean);
+    if (oldActive) {
+      const same = nextCandidates.findIndex((c) => c.backendId === oldActive.backendId && c.model === oldActive.model);
+      if (same >= 0) activeCandidate = same;
+      else activeCandidate = clampInt(cur.activeCandidate, 0, 0, Math.max(0, nextCandidates.length - 1));
+    }
+  }
   const merged = normalizeVirtualModel({
     id: cur.id,
     name: patch.name != null ? patch.name : cur.name,
@@ -3738,6 +3800,11 @@ async function apiUpdateVirtualModel(req, id) {
     match: Array.isArray(patch.match) ? patch.match : cur.match,
     rules: Array.isArray(patch.rules) ? patch.rules : cur.rules,
     default: (patch.default && typeof patch.default === "object") ? { ...cur.default, ...patch.default } : cur.default,
+    // Switchable candidates flow through PUT once normalize knows them. Arrays replace
+    // when provided (like match/rules); activeCandidate keeps the current pick by identity
+    // across reorder when the patch does not explicitly set it.
+    candidates: patchHasCandidates ? patch.candidates : cur.candidates,
+    activeCandidate,
   });
   if (!merged) throw vmHttpError(400, "virtual model is invalid: a resolvable default target (backendId + model) is required");
   validateVirtualModelBackends(merged, cfg);
@@ -3754,6 +3821,28 @@ async function apiDeleteVirtualModel(id) {
   if (cfg.virtualModels.length === before) throw vmHttpError(404, `virtual model not found: ${id}`);
   saveConfig(cfg);
   return cfg.virtualModels;
+}
+// Quick-switch: flip the active candidate of a switchable VM with one tiny call. A thin
+// convenience over PUT — clamps the index, persists, returns the updated (normalized) VM.
+// 404 if the VM is unknown; 400 if it has no candidates (nothing to switch). Live on the
+// next request (config is read fresh per request — no restart).
+async function apiSwitchVirtualModelCandidate(req, id) {
+  const input = await readJson(req);
+  const cfg = loadConfig();
+  const list = cfg.virtualModels || [];
+  const idx = list.findIndex((v) => v.id === id);
+  if (idx < 0) throw vmHttpError(404, `virtual model not found: ${id}`);
+  const cur = list[idx];
+  const candidates = Array.isArray(cur.candidates) ? cur.candidates : [];
+  if (!candidates.length) throw vmHttpError(400, `virtual model ${id} has no candidates to switch`);
+  const index = clampInt(input && input.index, 0, 0, candidates.length - 1);
+  // Re-normalize so the persisted shape stays clean and the clamp is authoritative.
+  const merged = normalizeVirtualModel({ ...cur, activeCandidate: index });
+  if (!merged) throw vmHttpError(400, "virtual model became invalid while switching");
+  list[idx] = merged;
+  cfg.virtualModels = list;
+  saveConfig(cfg);
+  return merged;
 }
 // Read-only preview: run evaluateVirtualModel against a sample body the WebUI pastes.
 // Pure (no disk write); admin not required. Returns which rule fired + the target.
@@ -4061,6 +4150,10 @@ async function apiRouter(req, res, url) {
       }
       if (seg.length === 4 && seg[3] === "preview" && method === "POST") {
         return sendJson(res, 200, await apiPreviewVirtualModel(seg[2], req)); // read-only, no admin guard
+      }
+      if (seg.length === 4 && seg[3] === "switch" && method === "POST") {
+        if (!isAdminOk(req)) return adminDenied(res);
+        return sendJson(res, 200, await apiSwitchVirtualModelCandidate(req, seg[2]));
       }
       return sendJson(res, 404, { error: { type: "not_found", message: "claude-router: unknown virtual-models api path " + url } });
     } catch (e) {
@@ -4779,6 +4872,105 @@ function selftestVirtualModels() {
   // req._virtualModel is set with the original alias + matched rule (mirror proxy)
   const req = { _virtualModel: { id: vmD.id, requested: "fusion-smart", target: targetD, rule: targetD.matchedRule } };
   assert(req._virtualModel.id === "fusion-smart" && req._virtualModel.rule === "hasImage", "res: _virtualModel carries alias + matched rule");
+
+  // (8.3b) Switchable candidates (the "router" manual switch) -------------------
+  // Backends available for candidate resolution (reuse glm/minimax/claude/codex).
+  const cfgSw = {
+    backends: [
+      { id: "glm",     format: "openai",    modelPatterns: ["glm-*"],     enabled: true },
+      { id: "minimax", format: "openai",    modelPatterns: ["minimax-*"], enabled: true },
+      { id: "claude",  format: "anthropic", modelPatterns: ["opus"],      enabled: true },
+      { id: "codex",   format: "openai",    modelPatterns: ["gpt-*"],     enabled: true },
+    ],
+    routes: [{ pattern: "*", backendId: "glm" }],
+    virtualModels: [{
+      id: "router", enabled: true, match: ["router"],
+      default: { backendId: "glm", model: "glm-5.2" },
+      rules: [],
+      candidates: [
+        { backendId: "glm",     model: "glm-5.2",     label: "GLM 5.2" },
+        { backendId: "minimax", model: "minimax-m3",  label: "MiniMax M3" },
+        { backendId: "claude",  model: "claude-opus-4-8", label: "Opus 4.8" },
+      ],
+      activeCandidate: 0,
+    }],
+  };
+  // candidates + no rules → resolves to candidates[activeCandidate]
+  let s = evaluateVirtualModel(resolveVirtualModel(cfgSw, "router"), txtBody, cfgSw);
+  assert(s.matchedRule === "active" && s.backendId === "glm" && s.model === "glm-5.2", "res: candidates active[0] → glm");
+  // flip the active candidate (mirrors /switch) → resolves to the new pick
+  const cfgSw1 = JSON.parse(JSON.stringify(cfgSw)); cfgSw1.virtualModels[0].activeCandidate = 1;
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSw1, "router"), txtBody, cfgSw1);
+  assert(s.matchedRule === "active" && s.backendId === "minimax" && s.model === "minimax-m3", "res: candidates active[1] → minimax");
+  // candidates + a matching rule → rule wins (override, layered on top)
+  const cfgSwRule = JSON.parse(JSON.stringify(cfgSw));
+  cfgSwRule.virtualModels[0].rules = [{ when: "hasImage", backendId: "claude", model: "claude-opus-4-8" }];
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSwRule, "router"), imgBody, cfgSwRule);
+  assert(s.matchedRule === "hasImage" && s.backendId === "claude", "res: rule overrides active candidate");
+  // same VM, non-matching body → falls back to the active candidate (not default)
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSwRule, "router"), txtBody, cfgSwRule);
+  assert(s.matchedRule === "active" && s.backendId === "glm", "res: rule misses → active candidate");
+  // activeCandidate clamp: out-of-range index clamps to the last candidate (at load,
+  // i.e. normalizeVirtualModel). evaluateVirtualModel ALSO clamps defensively so a raw
+  // (un-normalized) VM degrades gracefully — assert both.
+  const cfgSwClamp = JSON.parse(JSON.stringify(cfgSw)); cfgSwClamp.virtualModels[0].activeCandidate = 99;
+  assert(normalizeVirtualModel(cfgSwClamp.virtualModels[0]).activeCandidate === 2, "res: activeCandidate clamped on load (99 → 2)");
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSwClamp, "router"), txtBody, cfgSwClamp);
+  assert(s.matchedRule === "active" && s.backendId === "claude", "res: out-of-range active clamps → last candidate");
+  // negative index clamps to 0
+  const cfgSwNeg = JSON.parse(JSON.stringify(cfgSw)); cfgSwNeg.virtualModels[0].activeCandidate = -5;
+  assert(normalizeVirtualModel(cfgSwNeg.virtualModels[0]).activeCandidate === 0, "res: negative activeCandidate clamped to 0");
+  // active candidate whose backend is disabled → falls to the next valid candidate
+  const cfgSwDisabled = JSON.parse(JSON.stringify(cfgSw));
+  cfgSwDisabled.backends.find((b) => b.id === "glm").enabled = false; // active[0] backend disabled
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSwDisabled, "router"), txtBody, cfgSwDisabled);
+  assert(s.matchedRule === "active" && s.backendId === "minimax", "res: disabled active backend → next valid candidate");
+  // ALL candidate backends missing/disabled → falls through to default
+  const cfgSwAllGone = JSON.parse(JSON.stringify(cfgSw));
+  cfgSwAllGone.backends = [{ id: "codex", format: "openai", modelPatterns: ["gpt-*"], enabled: true }]; // default's glm also gone
+  cfgSwAllGone.virtualModels[0].default = { backendId: "codex", model: "gpt-5.5" };
+  s = evaluateVirtualModel(resolveVirtualModel(cfgSwAllGone, "router"), txtBody, cfgSwAllGone);
+  assert(s.matchedRule === "default" && s.backendId === "codex", "res: no valid candidate → default");
+  // normalize drops invalid candidate entries (missing backendId / model / non-object)
+  const normDrop = normalizeVirtualModel({
+    id: "router", match: ["router"], default: { backendId: "glm", model: "glm-5.2" },
+    candidates: [
+      { backendId: "glm", model: "glm-5.2" },          // valid (label defaults to model)
+      { backendId: "", model: "x" },                    // invalid: no backendId
+      { backendId: "y", model: "" },                    // invalid: no model
+      null, 42, "nope",                                  // invalid: not objects
+      { backendId: "minimax", model: "minimax-m3", label: "MM" }, // valid
+    ],
+    activeCandidate: 1,
+  });
+  assert(normDrop.candidates.length === 2, "res: normalize drops invalid candidates (2 valid remain)");
+  assert(normDrop.candidates[0].label === "glm-5.2" && normDrop.candidates[1].label === "MM", "res: candidate label defaults to model, custom kept");
+  assert(normDrop.activeCandidate === 1, "res: activeCandidate clamped against valid-candidate length");
+  // PUT candidate replacement without explicit activeCandidate preserves the active
+  // backend/model identity across reorder (mirrors apiUpdateVirtualModel's index repair).
+  const preserveCur = normalizeVirtualModel({
+    id: "router", match: ["router"], default: { backendId: "glm", model: "glm-5.2" },
+    candidates: [
+      { backendId: "glm", model: "glm-5.2" },
+      { backendId: "minimax", model: "minimax-m3" },
+      { backendId: "default", model: "claude-opus-4-8" },
+    ],
+    activeCandidate: 1,
+  });
+  const reordered = [preserveCur.candidates[2], preserveCur.candidates[0], preserveCur.candidates[1]];
+  const oldActive = preserveCur.candidates[preserveCur.activeCandidate];
+  const repairedActive = reordered.findIndex((c) => c.backendId === oldActive.backendId && c.model === oldActive.model);
+  const preserveMerged = normalizeVirtualModel({ ...preserveCur, candidates: reordered, activeCandidate: repairedActive });
+  assert(preserveMerged.activeCandidate === 2 && preserveMerged.candidates[preserveMerged.activeCandidate].model === "minimax-m3", "res: PUT reorder preserves active candidate identity");
+  // no candidates → classic VM shape (no candidates/activeCandidate keys at all)
+  const normNoCand = normalizeVirtualModel({ id: "plain", match: ["plain"], rules: [], default: { backendId: "glm", model: "glm-5.2" } });
+  assert(!("candidates" in normNoCand) && !("activeCandidate" in normNoCand), "res: no-candidate VM keeps byte-identical legacy shape");
+  // empty / all-invalid candidates → also no keys (behaves as classic rules+default VM)
+  const normEmpty = normalizeVirtualModel({ id: "plain", match: ["plain"], default: { backendId: "glm", model: "glm-5.2" }, candidates: [{ backendId: "" }], activeCandidate: 3 });
+  assert(!("candidates" in normEmpty) && !("activeCandidate" in normEmpty), "res: all-invalid candidates → classic shape, activeCandidate ignored");
+  // apiSwitch clamp parity: normalize({...vm, activeCandidate}) clamps like /switch does
+  const swClamped = normalizeVirtualModel({ ...cfgSw.virtualModels[0], activeCandidate: 50 });
+  assert(swClamped.activeCandidate === 2, "res: switch re-normalize clamps out-of-range index");
 
   // (8.4) Non-regression --------------------------------------------------------
   // loadConfig on a config WITHOUT virtualModels yields cfg.virtualModels === []
